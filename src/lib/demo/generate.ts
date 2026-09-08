@@ -305,6 +305,7 @@ function generateDay(ctx: DayContext, ents: BuiltEntities, rand: Rand, acc: Accu
       if (outcomeRoll < 0.06) {
         status = "rejected";
         const issueId = id("iss");
+        const isResolved = chance(0.5, rand);
         acc.issues.push({
           id: issueId,
           type: "business_rejection",
@@ -315,11 +316,11 @@ function generateDay(ctx: DayContext, ents: BuiltEntities, rand: Rand, acc: Accu
           foId: fo.id,
           assignmentId,
           owner: "You",
-          status: chance(0.5, rand) ? "resolved" : "open",
+          status: isResolved ? "resolved" : "open",
           lostHours: Math.round((durationMin / 60) * 100) / 100,
           createdAt: plannedStart,
-          resolvedAt: chance(0.5, rand) ? plannedEnd : undefined,
-          resolution: chance(0.5, rand) ? "Rescheduled for next available window." : undefined,
+          resolvedAt: isResolved ? plannedEnd : undefined,
+          resolution: isResolved ? "Rescheduled for next available window." : undefined,
         });
         pushActivity(acc, {
           type: "business_rejected",
@@ -333,6 +334,7 @@ function generateDay(ctx: DayContext, ents: BuiltEntities, rand: Rand, acc: Accu
         });
       } else if (outcomeRoll < 0.11) {
         status = "no_show";
+        const noShowResolved = chance(0.6, rand);
         acc.issues.push({
           id: id("iss"),
           type: "fo_no_show",
@@ -343,9 +345,11 @@ function generateDay(ctx: DayContext, ents: BuiltEntities, rand: Rand, acc: Accu
           foId: fo.id,
           assignmentId,
           owner: fo.name,
-          status: chance(0.6, rand) ? "resolved" : "open",
+          status: noShowResolved ? "resolved" : "open",
           lostHours: Math.round((durationMin / 60) * 100) / 100,
           createdAt: plannedStart,
+          resolvedAt: noShowResolved ? plannedEnd : undefined,
+          resolution: noShowResolved ? "Follow-up call made; visit will be rescheduled." : undefined,
         });
       } else {
         status = "completed";
@@ -441,6 +445,7 @@ function generateDay(ctx: DayContext, ents: BuiltEntities, rand: Rand, acc: Accu
 
         if (rig.condition !== "healthy" && chance(0.4, rand)) {
           const type: IssueType = rig.condition === "critical" ? "rig_failure" : "battery";
+          const rigResolved = chance(0.5, rand);
           acc.issues.push({
             id: id("iss"),
             type,
@@ -453,8 +458,9 @@ function generateDay(ctx: DayContext, ents: BuiltEntities, rand: Rand, acc: Accu
             sessionId: sess.id,
             assignmentId,
             owner: "You",
-            status: chance(0.5, rand) ? "resolved" : "open",
-            resolvedAt: chance(0.5, rand) ? actualEnd : undefined,
+            status: rigResolved ? "resolved" : "open",
+            resolvedAt: rigResolved ? actualEnd : undefined,
+            resolution: rigResolved ? (type === "rig_failure" ? "Rig swapped out and sent for inspection." : "Rig recharged before next session.") : undefined,
             lostHours: type === "rig_failure" ? 0.5 : 0.2,
             createdAt: actualEnd,
           });
