@@ -3,9 +3,27 @@ import { nowISO } from "@/lib/dates";
 import { autoQualityReview } from "./quality";
 import type { Assignment } from "@/types";
 
-/** Starts a session for a planned/confirmed assignment: marks FO arrived,
- * begins recording, and logs the activity trail. */
-export function startSessionForAssignment(assignment: Assignment) {
+/** Marks an FO as arrived at a visit without starting the recording yet. */
+export function checkInAssignment(assignment: Assignment) {
+  const { updateAssignment, logActivity } = useCity.getState();
+  const now = nowISO();
+  updateAssignment(assignment.id, { actualArrivalAt: assignment.actualArrivalAt ?? now, status: "confirmed" });
+  logActivity({
+    type: "fo_arrived",
+    entityKind: "assignment",
+    entityId: assignment.id,
+    businessId: assignment.businessId,
+    foId: assignment.foId,
+    summary: "FO arrived",
+  });
+}
+
+/** Starts a session for a planned/confirmed assignment: marks FO arrived (if
+ * not already), begins recording, and logs the activity trail. */
+export function startSessionForAssignment(
+  assignment: Assignment,
+  checklist?: Partial<NonNullable<import("@/types").Session["checklistSetup"]>>,
+) {
   const { addSession, updateAssignment, logActivity } = useCity.getState();
   const rig = useCity.getState().rigs.find((r) => r.id === assignment.rigId);
   const now = nowISO();
@@ -31,19 +49,27 @@ export function startSessionForAssignment(assignment: Assignment) {
       checkedStorage: true,
       confirmedCollector: true,
       capturedEvidence: false,
+      ...checklist,
     },
   });
 
-  updateAssignment(assignment.id, { status: "in_progress", actualArrivalAt: now, actualStart: now, sessionId: session.id });
-
-  logActivity({
-    type: "fo_arrived",
-    entityKind: "assignment",
-    entityId: assignment.id,
-    businessId: assignment.businessId,
-    foId: assignment.foId,
-    summary: "FO arrived",
+  updateAssignment(assignment.id, {
+    status: "in_progress",
+    actualArrivalAt: assignment.actualArrivalAt ?? now,
+    actualStart: now,
+    sessionId: session.id,
   });
+
+  if (!assignment.actualArrivalAt) {
+    logActivity({
+      type: "fo_arrived",
+      entityKind: "assignment",
+      entityId: assignment.id,
+      businessId: assignment.businessId,
+      foId: assignment.foId,
+      summary: "FO arrived",
+    });
+  }
   logActivity({
     type: "session_started",
     entityKind: "session",
