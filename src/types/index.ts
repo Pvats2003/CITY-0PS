@@ -22,6 +22,8 @@ export type EntityKind =
   | "fo"
   | "collector"
   | "rig"
+  | "rig_incident"
+  | "repair"
   | "assignment"
   | "session"
   | "issue"
@@ -77,19 +79,140 @@ export interface Collector {
 
 // ----------------------------------- Rig -------------------------------------
 
-export type RigCondition = "healthy" | "warning" | "critical" | "offline";
+/** Lifecycle bucket the rig is currently assigned to. Distinct from
+ * readiness (below), which is a computed, deterministic health judgment. */
+export type RigDeploymentStatus = "active" | "standby" | "inspection" | "repair" | "retired";
+
+/** Computed, never stored as ground truth except via manual override —
+ * see engine/rigGuardian.ts `deriveRigReadiness`. */
+export type RigReadinessStatus = "healthy" | "watch" | "inspection_required" | "do_not_deploy" | "in_repair";
 
 export interface Rig {
   id: string;
   code: string; // e.g. "R-04"
   model: string;
-  active: boolean;
+  active: boolean; // legacy simple flag; false only once retired
   batteryPct: number; // last known
   storagePct: number; // used %
-  condition: RigCondition;
+  deploymentStatus: RigDeploymentStatus;
+  /** Manual override of the computed readiness status (e.g. operator marks
+   * a rig unsafe ahead of a formal incident, or clears a stale computed
+   * status). Always shown with its reason — never silent. */
+  statusOverride?: RigReadinessStatus;
+  statusOverrideReason?: string;
+  lastInspectionAt?: string;
+  /** Set by "Create Inspection Task" — forces inspection_required until an
+   * inspection is logged (clears lastInspectionAt forward). */
+  inspectionRequestedAt?: string;
   lastServiceAt?: string;
   createdAt: string;
   notes?: string;
+  retiredAt?: string;
+}
+
+// ------------------------------- Rig Guardian ----------------------------------
+
+/** Fine-grained damage taxonomy (spec: "replace generic 'technical issue'
+ * wherever practical"). Grouped under DamageGroup for scoring/analysis. */
+export type DamageCategory =
+  // physical
+  | "wire_broken"
+  | "cable_frayed"
+  | "connector_damaged"
+  | "connector_loose"
+  | "mount_damaged"
+  | "casing_damaged"
+  | "camera_physical_damage"
+  // electrical
+  | "power_failure"
+  | "charging_failure"
+  | "battery_issue"
+  | "overheating"
+  // camera
+  | "camera_not_detected"
+  | "camera_dropout"
+  | "image_problem"
+  | "lens_obstruction"
+  // storage
+  | "storage_full"
+  | "memory_card_problem"
+  | "storage_corruption"
+  // recording
+  | "recording_wont_start"
+  | "recording_stopped"
+  | "incomplete_recording"
+  | "audio_failure"
+  // other
+  | "unknown_technical"
+  | "accidental_damage"
+  | "water_damage"
+  | "missing_component";
+
+export type DamageGroup = "physical" | "electrical" | "camera" | "storage" | "recording" | "other";
+
+export type DiscoveryStage = "preflight" | "setup" | "during_recording" | "post_session" | "qa" | "maintenance" | "other";
+
+export type RigIncidentStatus = "open" | "triage" | "inspection" | "repair" | "testing" | "resolved" | "cancelled";
+
+export interface IncidentEvidenceFile {
+  id: string;
+  name: string;
+  type: string;
+  sizeBytes: number;
+  localUrl: string;
+  capturedAt: string;
+}
+
+export interface RigIncident {
+  id: string;
+  rigId: string;
+  sessionId?: string;
+  assignmentId?: string;
+  businessId?: string;
+  foId?: string;
+  category: DamageCategory;
+  group: DamageGroup;
+  severity: Severity;
+  discoveredAt: string;
+  discoveryStage: DiscoveryStage;
+  description: string;
+  evidence: IncidentEvidenceFile[];
+  status: RigIncidentStatus;
+  rootCause?: string;
+  correctiveAction?: string;
+  /** Companion entry in the generic Issue list so the existing Action
+   * Inbox / Issue Center / lost-hours engine pick this up automatically. */
+  linkedIssueId?: string;
+  repairRecordId?: string;
+  lostHours?: number;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
+export interface RepairTestChecklist {
+  power: boolean;
+  cameras: boolean;
+  cables: boolean;
+  connectors: boolean;
+  storage: boolean;
+  recording: boolean;
+  battery: boolean;
+}
+
+export interface RepairRecord {
+  id: string;
+  rigId: string;
+  incidentId: string;
+  diagnosis: string;
+  repairAction: string;
+  parts?: string;
+  beforeEvidence: IncidentEvidenceFile[];
+  afterEvidence: IncidentEvidenceFile[];
+  testChecklist?: RepairTestChecklist;
+  testResult?: "pass" | "fail";
+  repairedAt: string;
+  notes?: string;
+  createdAt: string;
 }
 
 // -------------------------------- Assignment ----------------------------------
@@ -293,7 +416,18 @@ export type ActivityEventType =
   | "plan_changed"
   | "day_started"
   | "day_ended"
-  | "note";
+  | "note"
+  | "rig_preflight_passed"
+  | "rig_incident_reported"
+  | "rig_incident_status_changed"
+  | "rig_incident_resolved"
+  | "rig_repair_logged"
+  | "rig_repair_test_passed"
+  | "rig_repair_test_failed"
+  | "rig_inspection_completed"
+  | "rig_inspection_requested"
+  | "rig_retired"
+  | "rig_status_override";
 
 export interface ActivityEvent {
   id: string;
@@ -314,7 +448,15 @@ export interface ActivityEvent {
 
 export interface PlanConflict {
   id: string;
-  type: "fo_double_booking" | "rig_double_booking" | "fo_unavailable" | "rig_unavailable" | "business_unavailable" | "insufficient_capacity" | "unrealistic_timing";
+  type:
+    | "fo_double_booking"
+    | "rig_double_booking"
+    | "fo_unavailable"
+    | "rig_unavailable"
+    | "rig_unsafe"
+    | "business_unavailable"
+    | "insufficient_capacity"
+    | "unrealistic_timing";
   severity: Severity;
   message: string;
   assignmentIds: string[];
@@ -371,6 +513,8 @@ export interface CityData {
   issues: Issue[];
   qualityReviews: QualityReview[];
   correctiveActions: CorrectiveAction[];
+  rigIncidents: RigIncident[];
+  repairRecords: RepairRecord[];
   activity: ActivityEvent[];
   plans: DailyPlan[];
   reports: DailyReport[];

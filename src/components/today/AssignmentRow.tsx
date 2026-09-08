@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { MapPin, CheckCircle2, PlayCircle } from "lucide-react";
 import type { EnrichedAssignment } from "@/engine/todayView";
@@ -5,7 +6,7 @@ import { assignmentStatusToStatus } from "@/engine/todayView";
 import { StatusBadge } from "@/components/status";
 import { Button } from "@/components/ui/button";
 import { fmtTime } from "@/lib/dates";
-import { completeSession } from "@/engine/workflows";
+import { PostSessionCheckDialog } from "@/components/forms/PostSessionCheckDialog";
 
 export function AssignmentRow({
   item,
@@ -18,8 +19,9 @@ export function AssignmentRow({
   showFO?: boolean;
   showBusiness?: boolean;
 }) {
-  const { assignment, business, fo, rig } = item;
+  const { assignment, business, fo, rig, session } = item;
   const status = assignmentStatusToStatus(assignment.status);
+  const [postCheckOpen, setPostCheckOpen] = useState(false);
 
   return (
     <div className="flex items-center gap-3 py-3 px-1">
@@ -54,14 +56,15 @@ export function AssignmentRow({
             <PlayCircle className="size-3.5" /> Start
           </Button>
         )}
-        {assignment.status === "in_progress" && assignment.sessionId && (
+        {assignment.status === "in_progress" && session && (
           <>
-            <Button size="sm" variant="secondary" onClick={() => completeSession(assignment.sessionId!)}>
+            <Button size="sm" variant="secondary" onClick={() => setPostCheckOpen(true)}>
               <CheckCircle2 className="size-3.5" /> Complete
             </Button>
             <Button size="sm" variant="ghost" asChild>
               <Link to={`/sessions/${assignment.sessionId}`}>View</Link>
             </Button>
+            <PostSessionCheckDialog open={postCheckOpen} onOpenChange={setPostCheckOpen} session={session} />
           </>
         )}
         {assignment.status === "completed" && assignment.sessionId && (

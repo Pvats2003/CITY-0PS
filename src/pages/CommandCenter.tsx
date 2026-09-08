@@ -13,6 +13,8 @@ import {
   ShieldAlert,
   Info,
   ArrowRight,
+  Cpu,
+  ShieldCheck,
 } from "lucide-react";
 import { useCity } from "@/store/city";
 import { todayISO, fmtHours, fmtDate } from "@/lib/dates";
@@ -21,11 +23,13 @@ import { buildAttentionFeed } from "@/engine/attention";
 import { computeLostHours } from "@/engine/lostHours";
 import { buildTomorrowRecommendations } from "@/engine/reports";
 import { assignmentsForDate, recordedHoursForDate, activeSessions } from "@/engine/selectors";
+import { buildFleetReadiness, buildFleetRanking, computeRigLostHours } from "@/engine/rigGuardian";
 import { KpiCard } from "@/components/shared/KpiCard";
 import { ScoreBar } from "@/components/shared/ScoreBar";
 import { AttentionList } from "@/components/shared/AttentionList";
 import { ActivityTimeline } from "@/components/shared/ActivityTimeline";
 import { StatusBadge } from "@/components/status";
+import { RigReadinessBadge } from "@/components/rigs/RigReadinessBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -43,6 +47,10 @@ export default function CommandCenter() {
   const attention = useMemo(() => buildAttentionFeed(data, date), [data, date]);
   const lostHours = useMemo(() => computeLostHours(data, date), [data, date]);
   const tomorrowRecs = useMemo(() => buildTomorrowRecommendations(data, date), [data, date]);
+  const fleetSummaries = useMemo(() => buildFleetRanking(data), [data]);
+  const fleetReadiness = useMemo(() => buildFleetReadiness(data, date, fleetSummaries), [data, date, fleetSummaries]);
+  const fleetLostHours = useMemo(() => computeRigLostHours(data, undefined, date), [data, date]);
+  const riskyRigs = useMemo(() => fleetSummaries.filter((s) => s.readiness !== "healthy").slice(0, 4), [fleetSummaries]);
 
   const assignments = assignmentsForDate(data, date);
   const completed = assignments.filter((a) => a.status === "completed").length;
@@ -91,7 +99,7 @@ export default function CommandCenter() {
 
       <div className="px-4 md:px-6 pt-5 space-y-5">
         {/* KPI strip */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
           <KpiCard
             className="lg:col-span-2"
             size="lg"
@@ -110,6 +118,13 @@ export default function CommandCenter() {
             sub={openCritical > 0 ? "needs action" : "all clear"}
             icon={ShieldAlert}
             tone={openCritical > 0 ? "critical" : "success"}
+          />
+          <KpiCard
+            label="Fleet Ready"
+            value={`${fleetReadiness.healthy}/${fleetReadiness.total}`}
+            sub={fleetReadiness.status === "ready" ? "healthy capacity" : "at risk"}
+            icon={Cpu}
+            tone={fleetReadiness.status === "ready" ? "success" : "critical"}
           />
         </div>
 
@@ -201,6 +216,64 @@ export default function CommandCenter() {
             </CardContent>
           </Card>
         </div>
+
+        {/* Rig Guardian */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Cpu className="size-4" /> Rig Guardian
+            </CardTitle>
+            <Button asChild size="sm" variant="ghost">
+              <Link to="/fleet">
+                View Fleet <ArrowRight className="size-3.5" />
+              </Link>
+            </Button>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <div className={`flex items-center gap-2 text-sm font-semibold ${fleetReadiness.status === "ready" ? "text-success" : "text-critical"}`}>
+                {fleetReadiness.status === "ready" ? <ShieldCheck className="size-4" /> : <ShieldAlert className="size-4" />}
+                {fleetReadiness.status === "ready" ? "CITY HAS HEALTHY RIG CAPACITY" : "CITY AT RISK"}
+                {fleetReadiness.status === "at_risk" && <span className="font-normal text-muted">— {fleetReadiness.statusMessage}</span>}
+              </div>
+              <div className="flex items-center gap-4 text-xs text-muted">
+                <span>
+                  Required: <span className="font-semibold text-foreground tabular-nums">{fleetReadiness.requiredToday}</span>
+                </span>
+                <span>
+                  Ready: <span className="font-semibold text-foreground tabular-nums">{fleetReadiness.readyCount}</span>
+                </span>
+                <span>
+                  Buffer: <span className={`font-semibold tabular-nums ${fleetReadiness.buffer < 0 ? "text-critical" : "text-foreground"}`}>{fleetReadiness.buffer}</span>
+                </span>
+                {fleetLostHours.today > 0 && (
+                  <span>
+                    Lost today: <span className="font-semibold text-critical tabular-nums">−{fmtHours(fleetLostHours.today)}</span>
+                  </span>
+                )}
+              </div>
+            </div>
+            {riskyRigs.length === 0 ? (
+              <div className="text-sm text-success">All rigs healthy — no attention needed.</div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {riskyRigs.map((s) => (
+                  <Link
+                    key={s.rig.id}
+                    to={`/fleet/${s.rig.id}`}
+                    className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2 hover:border-border-strong transition-colors"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium truncate">{s.rig.code}</div>
+                      <div className="text-xs text-muted truncate">{s.readinessReason}</div>
+                    </div>
+                    <RigReadinessBadge status={s.readiness} className="shrink-0" />
+                  </Link>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* What happened today */}
         <Card>

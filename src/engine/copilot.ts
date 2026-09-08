@@ -3,6 +3,7 @@ import { todayISO } from "@/lib/dates";
 import { daysBack, activeSessions, issuesOpen } from "./selectors";
 import { computeLostHours } from "./lostHours";
 import { buildEOD } from "./reports";
+import { buildFleetRanking, buildFleetReadiness, buildCityFailureAnalysis, computeRigLostHours, isDeployable } from "./rigGuardian";
 
 export interface CopilotResult {
   kind: "data" | "recommendation" | "help";
@@ -20,6 +21,89 @@ function norm(q: string): string {
 }
 
 const rules: Rule[] = [
+  {
+    test: (q) => /unsafe rig|which rigs? .*unsafe|do not deploy/.test(q),
+    run: (data) => {
+      const ranking = buildFleetRanking(data);
+      const unsafe = ranking.filter((s) => !isDeployable(s.readiness));
+      if (unsafe.length === 0) return { kind: "data", answer: "No unsafe rigs right now — the fleet is clear to deploy." };
+      return {
+        kind: "data",
+        answer: `${unsafe.length} unsafe rig${unsafe.length === 1 ? "" : "s"}: ${unsafe.map((s) => `${s.rig.code} (${s.readinessReason})`).join("; ")}.`,
+        links: [{ label: "Open Fleet", to: "/fleet" }],
+      };
+    },
+  },
+  {
+    test: (q) => /(rig|fleet).*most (failures|incidents)|most (failures|incidents).*rig/.test(q),
+    run: (data) => {
+      const ranking = buildFleetRanking(data);
+      const worst = [...ranking].sort((a, b) => b.incidentCount30d - a.incidentCount30d)[0];
+      if (!worst || worst.incidentCount30d === 0) return { kind: "data", answer: "No rig has recorded incidents in the last 30 days." };
+      return {
+        kind: "data",
+        answer: `${worst.rig.code} has the most failures: ${worst.incidentCount30d} incidents in the last 30 days (health ${worst.score}/100).`,
+        links: [{ label: "Open Rig 360", to: `/fleet/${worst.rig.id}` }],
+      };
+    },
+  },
+  {
+    test: (q) => /why.*rigs?.*fail|why are.*rigs.*failing|rig failure.*breakdown/.test(q),
+    run: (data) => {
+      const analysis = buildCityFailureAnalysis(data, 30);
+      if (analysis.totalIncidents === 0) return { kind: "data", answer: "Insufficient historical data." };
+      const lines = analysis.breakdown.map((b) => `${b.label} ${b.pct}%`).join(", ");
+      return {
+        kind: "data",
+        answer: `Rig failures in the last 30 days: ${lines}. Biggest failure mode: ${analysis.biggest?.label} (${analysis.biggest?.count} incidents, ${analysis.biggest?.lostHours.toFixed(1)}h lost).`,
+        links: [{ label: "Open Fleet", to: "/fleet" }],
+      };
+    },
+  },
+  {
+    test: (q) => /rig.*hours.*(lost|lose)|lost.*rig.*hours|how many rig.*hours/.test(q),
+    run: (data) => {
+      const lost = computeRigLostHours(data);
+      return { kind: "data", answer: `Rig failures cost ${lost.today.toFixed(1)}h today, ${lost.week.toFixed(1)}h this week, and ${lost.month.toFixed(1)}h this month.` };
+    },
+  },
+  {
+    test: (q) => /which rig should i assign|what rig should i (use|assign)/.test(q),
+    run: (data) => {
+      const ranking = buildFleetRanking(data).filter((s) => isDeployable(s.readiness));
+      if (ranking.length === 0) return { kind: "recommendation", answer: "No deployable rig right now — every rig is either in repair or unsafe." };
+      const best = ranking[0];
+      return { kind: "recommendation", answer: `Assign ${best.rig.code} — it's the healthiest deployable rig (${best.score}/100).`, links: [{ label: "Open Rig 360", to: `/fleet/${best.rig.id}` }] };
+    },
+  },
+  {
+    test: (q) => /rigs?.*need.*inspection|which rigs?.*inspection/.test(q),
+    run: (data) => {
+      const ranking = buildFleetRanking(data).filter((s) => s.inspection.required);
+      if (ranking.length === 0) return { kind: "data", answer: "No rigs currently need inspection." };
+      return { kind: "data", answer: ranking.map((s) => `${s.rig.code} (${s.inspection.reasons[0]})`).join("; "), links: [{ label: "Open Fleet", to: "/fleet" }] };
+    },
+  },
+  {
+    test: (q) => /repeated cable failure|repeat.*cable|cable.*repeat/.test(q),
+    run: (data) => {
+      const ranking = buildFleetRanking(data);
+      const patterns = ranking.flatMap((s) => s.repeatedFailures.filter((p) => p.message.toLowerCase().includes("physical")).map((p) => `${s.rig.code}: ${p.message}`));
+      if (patterns.length === 0) return { kind: "data", answer: "No repeated cable/physical failure patterns detected." };
+      return { kind: "data", answer: patterns.join(" "), links: [{ label: "Open Fleet", to: "/fleet" }] };
+    },
+  },
+  {
+    test: (q) => /fleet readiness|rig readiness|how many rigs.*ready/.test(q),
+    run: (data) => {
+      const readiness = buildFleetReadiness(data, todayISO());
+      return {
+        kind: "data",
+        answer: `${readiness.readyCount}/${readiness.total} rigs ready, ${readiness.watch} watch, ${readiness.inspectionRequired} needing inspection, ${readiness.doNotDeploy} unsafe. ${readiness.statusMessage}`,
+        links: [{ label: "Open Fleet", to: "/fleet" }],
+      };
+    },
+  },
   {
     test: (q) => /lost.*(hour|time)/.test(q) && /week/.test(q),
     run: (data) => {
@@ -152,13 +236,20 @@ export function runCopilotQuery(data: CityData, question: string): CopilotResult
 }
 
 export const COPILOT_EXAMPLES = [
+  "Which rigs are unsafe?",
+  "Which rig has the most failures?",
+  "Why are rigs failing?",
+  "How many rig-related hours did we lose this week?",
+  "Which rig should I assign tomorrow?",
+  "Which rigs need inspection?",
+  "Show repeated cable failures.",
+  "What is our fleet readiness?",
   "Which businesses lost the most hours this week?",
   "Who is working tomorrow?",
   "Show active sessions.",
   "How many recording hours did we collect today?",
   "Which FO had the most delays?",
   "What should I fix first?",
-  "Show businesses with repeated rejection.",
   "Give me today's EOD.",
   "Show all open critical issues.",
 ];

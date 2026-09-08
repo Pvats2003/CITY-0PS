@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { useCity } from "@/store/city";
 import { useUI } from "@/store/ui";
 import { activeSessions, issuesOpen } from "@/engine/selectors";
+import { buildFleetRanking, isDeployable } from "@/engine/rigGuardian";
 import { Badge } from "@/components/ui/badge";
 
 export function Sidebar() {
@@ -14,6 +15,7 @@ export function Sidebar() {
 
   const openCritical = issuesOpen(data).filter((i) => i.severity === "critical").length;
   const liveSessions = activeSessions(data).length;
+  const unsafeRigs = buildFleetRanking(data).filter((s) => !isDeployable(s.readiness)).length;
 
   return (
     <aside className="hidden md:flex w-56 shrink-0 flex-col border-r border-border bg-surface">
@@ -30,7 +32,7 @@ export function Sidebar() {
       <nav className="flex-1 overflow-y-auto scrollbar-none px-2 py-3 space-y-0.5">
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
-          const badge = item.to === "/issues" ? openCritical : item.to === "/sessions" ? liveSessions : 0;
+          const badge = item.to === "/issues" ? openCritical : item.to === "/sessions" ? liveSessions : item.to === "/fleet" ? unsafeRigs : 0;
           return (
             <NavLink
               key={item.to}
@@ -48,7 +50,7 @@ export function Sidebar() {
               <Icon className="size-4 shrink-0" />
               <span className="flex-1 truncate">{item.label}</span>
               {badge > 0 && (
-                <Badge variant={item.to === "/issues" ? "critical" : "info"} className="px-1.5 py-0 text-[10px]">
+                <Badge variant={item.to === "/issues" || item.to === "/fleet" ? "critical" : "info"} className="px-1.5 py-0 text-[10px]">
                   {badge}
                 </Badge>
               )}

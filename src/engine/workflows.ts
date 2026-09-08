@@ -1,7 +1,9 @@
 import { useCity } from "@/store/city";
 import { nowISO } from "@/lib/dates";
 import { autoQualityReview } from "./quality";
-import type { Assignment } from "@/types";
+import { categoryGroup, categoryLabel, ISSUE_TYPE_BY_GROUP } from "./rigTaxonomy";
+import { estimateIncidentLostHours } from "./rigGuardian";
+import type { Assignment, DamageCategory, DiscoveryStage, IncidentEvidenceFile, RepairTestChecklist, Severity } from "@/types";
 
 /** Marks an FO as arrived at a visit without starting the recording yet. */
 export function checkInAssignment(assignment: Assignment) {
@@ -130,4 +132,232 @@ export function completeSession(sessionId: string) {
   });
 
   return review;
+}
+
+// ---------------------------------------------------------------------------
+// Rig Guardian workflows
+// ---------------------------------------------------------------------------
+
+/** Reports a rig incident: creates the structured RigIncident (taxonomy,
+ * discovery stage, evidence) and a companion generic Issue so the existing
+ * Action Inbox / Issue Center / lost-hours engine pick it up unchanged. */
+export function reportRigIncident(params: {
+  rigId: string;
+  category: DamageCategory;
+  severity: Severity;
+  discoveryStage: DiscoveryStage;
+  description: string;
+  sessionId?: string;
+  assignmentId?: string;
+  businessId?: string;
+  foId?: string;
+  evidence?: IncidentEvidenceFile[];
+  lostHours?: number;
+}) {
+  const { addRigIncident, addIssue, updateRigIncident, logActivity, rigs } = useCity.getState();
+  const rig = rigs.find((r) => r.id === params.rigId);
+  const now = nowISO();
+  const group = categoryGroup(params.category);
+  const lostHours = params.lostHours ?? estimateIncidentLostHours(useCity.getState(), { assignmentId: params.assignmentId, severity: params.severity, discoveredAt: now });
+
+  const incident = addRigIncident({
+    rigId: params.rigId,
+    sessionId: params.sessionId,
+    assignmentId: params.assignmentId,
+    businessId: params.businessId,
+    foId: params.foId,
+    category: params.category,
+    group,
+    severity: params.severity,
+    discoveredAt: now,
+    discoveryStage: params.discoveryStage,
+    description: params.description,
+    evidence: params.evidence ?? [],
+    status: "open",
+    lostHours,
+  });
+
+  const issue = addIssue({
+    type: ISSUE_TYPE_BY_GROUP[group],
+    severity: params.severity,
+    title: `${rig?.code ?? "Rig"}: ${categoryLabel(params.category)}`,
+    description: params.description || categoryLabel(params.category),
+    businessId: params.businessId,
+    foId: params.foId,
+    rigId: params.rigId,
+    sessionId: params.sessionId,
+    assignmentId: params.assignmentId,
+    owner: "You",
+    status: "open",
+    lostHours,
+  });
+
+  updateRigIncident(incident.id, { linkedIssueId: issue.id });
+
+  logActivity({
+    type: "rig_incident_reported",
+    entityKind: "rig_incident",
+    entityId: incident.id,
+    rigId: params.rigId,
+    businessId: params.businessId,
+    foId: params.foId,
+    sessionId: params.sessionId,
+    issueId: issue.id,
+    summary: `${rig?.code ?? "Rig"}: ${categoryLabel(params.category)} (discovered at ${params.discoveryStage.replace("_", " ")})`,
+    detail: params.description,
+  });
+
+  return incident;
+}
+
+/** Advances a rig incident through the repair lifecycle, keeping the rig's
+ * deploymentStatus in sync so Fleet/Planner reflect it immediately. */
+export function advanceRigIncidentStatus(incidentId: string, status: "triage" | "inspection" | "repair" | "testing" | "cancelled") {
+  const { rigIncidents, updateRigIncident, updateRig, logActivity } = useCity.getState();
+  const incident = rigIncidents.find((i) => i.id === incidentId);
+  if (!incident) return;
+  updateRigIncident(incidentId, { status });
+  if (status === "inspection") updateRig(incident.rigId, { deploymentStatus: "inspection" });
+  if (status === "repair") updateRig(incident.rigId, { deploymentStatus: "repair" });
+  logActivity({
+    type: "rig_incident_status_changed",
+    entityKind: "rig_incident",
+    entityId: incidentId,
+    rigId: incident.rigId,
+    summary: `Incident moved to ${status}`,
+  });
+}
+
+/** Records the repair performed. Puts the incident into "testing" — only a
+ * passing post-repair test (runPostRepairTest) returns the rig to service. */
+export function saveRepairRecord(params: {
+  rigId: string;
+  incidentId: string;
+  diagnosis: string;
+  repairAction: string;
+  parts?: string;
+  beforeEvidence?: IncidentEvidenceFile[];
+  afterEvidence?: IncidentEvidenceFile[];
+  notes?: string;
+}) {
+  const { addRepairRecord, updateRigIncident, updateRig, logActivity, rigs } = useCity.getState();
+  const rig = rigs.find((r) => r.id === params.rigId);
+  const record = addRepairRecord({
+    rigId: params.rigId,
+    incidentId: params.incidentId,
+    diagnosis: params.diagnosis,
+    repairAction: params.repairAction,
+    parts: params.parts,
+    beforeEvidence: params.beforeEvidence ?? [],
+    afterEvidence: params.afterEvidence ?? [],
+    notes: params.notes,
+    repairedAt: nowISO(),
+  });
+  updateRigIncident(params.incidentId, { status: "testing", repairRecordId: record.id, correctiveAction: params.repairAction });
+  updateRig(params.rigId, { deploymentStatus: "repair" });
+  logActivity({
+    type: "rig_repair_logged",
+    entityKind: "repair",
+    entityId: record.id,
+    rigId: params.rigId,
+    summary: `Repair logged for ${rig?.code ?? "rig"}: ${params.repairAction}`,
+    detail: params.diagnosis,
+  });
+  return record;
+}
+
+/** Only a PASS automatically returns the rig to READY — a FAIL sends it
+ * back for further repair. Never auto-passes. */
+export function runPostRepairTest(repairRecordId: string, checklist: RepairTestChecklist, result: "pass" | "fail") {
+  const { repairRecords, updateRepairRecord, rigIncidents, updateRigIncident, updateRig, logActivity, resolveIssue } = useCity.getState();
+  const record = repairRecords.find((r) => r.id === repairRecordId);
+  if (!record) return;
+  updateRepairRecord(repairRecordId, { testChecklist: checklist, testResult: result });
+
+  if (result === "pass") {
+    const now = nowISO();
+    updateRigIncident(record.incidentId, { status: "resolved", resolvedAt: now });
+    const incident = rigIncidents.find((i) => i.id === record.incidentId);
+    if (incident?.linkedIssueId) resolveIssue(incident.linkedIssueId, `Repaired: ${record.repairAction}`);
+    updateRig(record.rigId, { deploymentStatus: "active", statusOverride: undefined, statusOverrideReason: undefined });
+    logActivity({ type: "rig_repair_test_passed", entityKind: "repair", entityId: record.id, rigId: record.rigId, summary: "Post-repair test passed — rig returned to service" });
+  } else {
+    updateRigIncident(record.incidentId, { status: "repair" });
+    logActivity({ type: "rig_repair_test_failed", entityKind: "repair", entityId: record.id, rigId: record.rigId, summary: "Post-repair test failed — rig sent back for further repair" });
+  }
+}
+
+export function requestRigInspection(rigId: string, reason?: string) {
+  const { updateRig, logActivity, rigs } = useCity.getState();
+  const rig = rigs.find((r) => r.id === rigId);
+  updateRig(rigId, { inspectionRequestedAt: nowISO() });
+  logActivity({
+    type: "rig_inspection_requested",
+    entityKind: "rig",
+    entityId: rigId,
+    rigId,
+    summary: `Inspection requested for ${rig?.code ?? "rig"}`,
+    detail: reason,
+  });
+}
+
+export function completeRigInspection(rigId: string, passed: boolean, notes?: string) {
+  const { updateRig, logActivity, rigs } = useCity.getState();
+  const rig = rigs.find((r) => r.id === rigId);
+  const now = nowISO();
+  updateRig(rigId, {
+    lastInspectionAt: now,
+    inspectionRequestedAt: undefined,
+    deploymentStatus: passed ? "active" : "inspection",
+  });
+  if (!passed) {
+    reportRigIncident({
+      rigId,
+      category: "unknown_technical",
+      severity: "warning",
+      discoveryStage: "maintenance",
+      description: notes || "Failed scheduled inspection.",
+    });
+  }
+  logActivity({
+    type: "rig_inspection_completed",
+    entityKind: "rig",
+    entityId: rigId,
+    rigId,
+    summary: `${rig?.code ?? "Rig"} inspection ${passed ? "passed" : "failed"}`,
+    detail: notes,
+  });
+}
+
+export function setRigStatusOverride(rigId: string, status: import("@/types").RigReadinessStatus | undefined, reason?: string) {
+  const { updateRig, logActivity, rigs } = useCity.getState();
+  const rig = rigs.find((r) => r.id === rigId);
+  updateRig(rigId, { statusOverride: status, statusOverrideReason: status ? reason : undefined });
+  logActivity({
+    type: "rig_status_override",
+    entityKind: "rig",
+    entityId: rigId,
+    rigId,
+    summary: status ? `${rig?.code ?? "Rig"} manually set to ${status.replace(/_/g, " ")}` : `Manual override cleared for ${rig?.code ?? "rig"}`,
+    detail: reason,
+  });
+}
+
+export function retireRig(rigId: string, reason?: string) {
+  const { updateRig, logActivity, rigs } = useCity.getState();
+  const rig = rigs.find((r) => r.id === rigId);
+  updateRig(rigId, { deploymentStatus: "retired", active: false, retiredAt: nowISO() });
+  logActivity({ type: "rig_retired", entityKind: "rig", entityId: rigId, rigId, summary: `${rig?.code ?? "Rig"} retired`, detail: reason });
+}
+
+export function logRigPreflightPassed(rigId: string) {
+  const { logActivity, rigs } = useCity.getState();
+  const rig = rigs.find((r) => r.id === rigId);
+  logActivity({
+    type: "rig_preflight_passed",
+    entityKind: "rig",
+    entityId: rigId,
+    rigId,
+    summary: `${rig?.code ?? "Rig"} passed preflight`,
+  });
 }

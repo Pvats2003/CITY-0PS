@@ -2,6 +2,8 @@ import type { CityData } from "@/types";
 import { assignmentsForDate, plannedHoursForDate, recordedHoursForDate } from "./selectors";
 import { computeLostHours } from "./lostHours";
 import { computeCityHealth } from "./health";
+import { buildRigSummary, isDeployable, needsInspection } from "./rigGuardian";
+import { DAMAGE_GROUP_LABELS } from "./rigTaxonomy";
 
 export interface SODReport {
   date: string;
@@ -41,15 +43,26 @@ export function buildSOD(data: CityData, date: string, targetHours: number): SOD
   const expectedHours = plannedHoursForDate(data, date);
 
   const risks: string[] = [];
-  const criticalRigs = data.rigs.filter((r) => assignments.some((a) => a.rigId === r.id) && (r.condition === "critical" || r.condition === "warning"));
-  for (const r of criticalRigs) risks.push(`Rig ${r.code} is in ${r.condition} condition and assigned today.`);
+  const assignedRigIds = new Set(assignments.map((a) => a.rigId).filter(Boolean));
+  const riskyRigs = [...assignedRigIds]
+    .map((rid) => data.rigs.find((r) => r.id === rid))
+    .filter((r): r is NonNullable<typeof r> => !!r)
+    .map((r) => buildRigSummary(data, r))
+    .filter((s) => s.readiness !== "healthy");
+  for (const s of riskyRigs) {
+    risks.push(
+      isDeployable(s.readiness)
+        ? `Rig ${s.rig.code} is ${s.readiness.replace(/_/g, " ")} (${s.score}/100) and assigned today.`
+        : `Rig ${s.rig.code} is unsafe to deploy (${s.readinessReason}) but assigned today.`,
+    );
+  }
   if (expectedHours < targetHours) risks.push(`Planned hours (${expectedHours.toFixed(1)}h) are below the ${targetHours}h target.`);
   const unassigned = data.businesses.filter((b) => b.active).length - new Set(assignments.map((a) => a.businessId)).size;
   if (unassigned > 0) risks.push(`${unassigned} active business${unassigned === 1 ? "" : "es"} have no visit planned today.`);
 
   const actions: string[] = [];
   if (fosAssigned.length > 0) actions.push(`Confirm check-in for all ${fosAssigned.length} FOs before their first visit.`);
-  if (criticalRigs.length > 0) actions.push(`Inspect ${criticalRigs.map((r) => r.code).join(", ")} before deployment.`);
+  if (riskyRigs.length > 0) actions.push(`Inspect ${riskyRigs.map((s) => s.rig.code).join(", ")} before deployment.`);
   if (risks.length === 0) actions.push("No blocking risks identified — proceed as planned.");
 
   return { date, businessesPlanned, fosAssigned, rigsAllocated, expectedHours: Math.round(expectedHours * 10) / 10, targetHours, risks, actions };
@@ -103,6 +116,15 @@ export function buildMOD(data: CityData, date: string, targetHours: number): MOD
   };
 }
 
+export interface EODRigPerformance {
+  lostHours: number;
+  incidentCount: number;
+  mostCommonGroup?: string;
+  worstAffectedRig?: { id: string; code: string; incidentCount: number };
+  actionForTomorrow?: string;
+  rigsNeedingInspection: { id: string; code: string }[];
+}
+
 export interface EODReport {
   date: string;
   businessesCompleted: number;
@@ -115,6 +137,7 @@ export interface EODReport {
   lostHours: ReturnType<typeof computeLostHours>;
   healthScore: number;
   foPerformance: { id: string; name: string; visits: number; onTimePct: number }[];
+  rigPerformance: EODRigPerformance;
   narrative: string;
 }
 
@@ -150,6 +173,8 @@ export function buildEOD(data: CityData, date: string, targetHours: number): EOD
     foPerformance,
   });
 
+  const rigPerformance = buildEODRigPerformance(data, date);
+
   return {
     date,
     businessesCompleted: completed.length,
@@ -161,8 +186,43 @@ export function buildEOD(data: CityData, date: string, targetHours: number): EOD
     issueCount: data.issues.filter((i) => i.createdAt.slice(0, 10) === date).length,
     lostHours,
     healthScore: health.score,
+    rigPerformance,
     foPerformance,
     narrative,
+  };
+}
+
+function buildEODRigPerformance(data: CityData, date: string): EODRigPerformance {
+  const incidents = data.rigIncidents.filter((i) => i.discoveredAt.slice(0, 10) === date);
+  const lostHours = Math.round(incidents.reduce((s, i) => s + (i.lostHours ?? 0), 0) * 100) / 100;
+
+  const groupCounts = new Map<string, number>();
+  for (const i of incidents) groupCounts.set(i.group, (groupCounts.get(i.group) ?? 0) + 1);
+  const mostCommonGroup = [...groupCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+
+  const rigCounts = new Map<string, number>();
+  for (const i of incidents) rigCounts.set(i.rigId, (rigCounts.get(i.rigId) ?? 0) + 1);
+  const worstEntry = [...rigCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+  const worstRig = worstEntry ? data.rigs.find((r) => r.id === worstEntry[0]) : undefined;
+
+  const rigsNeedingInspection = data.rigs
+    .filter((r) => r.deploymentStatus !== "retired" && needsInspection(data, r).required)
+    .map((r) => ({ id: r.id, code: r.code }));
+
+  const actionForTomorrow =
+    rigsNeedingInspection.length > 0
+      ? `Inspect ${rigsNeedingInspection.map((r) => r.code).join(" and ")} before deployment.`
+      : mostCommonGroup
+        ? `Review ${DAMAGE_GROUP_LABELS[mostCommonGroup[0] as keyof typeof DAMAGE_GROUP_LABELS].toLowerCase()} issues from today before tomorrow's plan.`
+        : undefined;
+
+  return {
+    lostHours,
+    incidentCount: incidents.length,
+    mostCommonGroup: mostCommonGroup ? DAMAGE_GROUP_LABELS[mostCommonGroup[0] as keyof typeof DAMAGE_GROUP_LABELS] : undefined,
+    worstAffectedRig: worstRig && worstEntry ? { id: worstRig.id, code: worstRig.code, incidentCount: worstEntry[1] } : undefined,
+    actionForTomorrow,
+    rigsNeedingInspection,
   };
 }
 
@@ -180,6 +240,13 @@ function buildEODNarrative(
 
   if (ctx.lostHours.topCause) {
     sentences.push(`Primary loss: ${ctx.lostHours.topCause.label} (−${ctx.lostHours.topCause.hours.toFixed(1)}h).`);
+  }
+
+  const rigPerf = buildEODRigPerformance(data, date);
+  if (rigPerf.incidentCount > 0 && rigPerf.worstAffectedRig) {
+    sentences.push(
+      `Rig incidents caused ${rigPerf.lostHours.toFixed(1)}h of lost recording time today, mostly ${rigPerf.worstAffectedRig.code} (${rigPerf.worstAffectedRig.incidentCount} incident${rigPerf.worstAffectedRig.incidentCount === 1 ? "" : "s"}).`,
+    );
   }
 
   const bizMap = new Map(data.businesses.map((b) => [b.id, b]));
@@ -213,7 +280,7 @@ export interface TomorrowRecommendation {
   id: string;
   description: string;
   reasoning: string;
-  patch?: { assignmentId?: string; businessId?: string; foId?: string; time?: string };
+  patch?: { assignmentId?: string; businessId?: string; foId?: string; time?: string; rigId?: string; replaceRigId?: string };
 }
 
 export function buildTomorrowRecommendations(data: CityData, date: string): TomorrowRecommendation[] {
@@ -244,16 +311,58 @@ export function buildTomorrowRecommendations(data: CityData, date: string): Tomo
     }
   }
 
-  const rigIssues = data.issues.filter((i) => i.createdAt.slice(0, 10) === date && ["rig_failure", "battery", "storage"].includes(i.type));
-  for (const issue of rigIssues) {
-    const altRig = data.rigs.find((r) => r.id !== issue.rigId && r.active && r.condition === "healthy");
-    if (altRig) {
+  // Rig Guardian: risky rigs assigned today, ranked by health.
+  const riskyRigIds = new Set(
+    assignments
+      .map((a) => a.rigId)
+      .filter((rid): rid is string => !!rid)
+      .filter((rid) => {
+        const rig = data.rigs.find((r) => r.id === rid);
+        if (!rig) return false;
+        return buildRigSummary(data, rig).readiness !== "healthy";
+      }),
+  );
+  for (const rid of riskyRigIds) {
+    const rig = data.rigs.find((r) => r.id === rid)!;
+    const summary = buildRigSummary(data, rig);
+    if (!isDeployable(summary.readiness)) {
       recs.push({
-        id: `rig-${issue.id}`,
-        description: `Use rig ${altRig.code} instead of the one involved in today's issue.`,
-        reasoning: issue.description,
+        id: `rig-unsafe-${rid}`,
+        description: `Assign a healthy rig instead of ${rig.code} tomorrow.`,
+        reasoning: `${rig.code} is not safe to deploy — ${summary.readinessReason}`,
+        patch: { replaceRigId: rid },
+      });
+    } else {
+      recs.push({
+        id: `rig-inspect-${rid}`,
+        description: `Inspect ${rig.code} before its first session tomorrow.`,
+        reasoning: `${rig.code} is at ${summary.score}/100 health (${summary.readinessReason})`,
+        patch: { rigId: rid },
       });
     }
+  }
+
+  // Preventive inspection due, independent of tomorrow's schedule.
+  for (const rig of data.rigs.filter((r) => r.deploymentStatus === "active" && !riskyRigIds.has(r.id))) {
+    const inspection = needsInspection(data, rig);
+    if (inspection.required) {
+      recs.push({
+        id: `rig-preventive-${rig.id}`,
+        description: `Inspect ${rig.code}.`,
+        reasoning: inspection.reasons[0],
+        patch: { rigId: rig.id },
+      });
+    }
+  }
+
+  // Standby rigs worth keeping in reserve.
+  const standbyHealthy = data.rigs.filter((r) => r.deploymentStatus === "standby" && buildRigSummary(data, r).readiness === "healthy");
+  if (standbyHealthy.length > 0) {
+    recs.push({
+      id: "rig-standby",
+      description: `Keep ${standbyHealthy.map((r) => r.code).join(", ")} as standby.`,
+      reasoning: `${standbyHealthy.length} healthy rig${standbyHealthy.length === 1 ? "" : "s"} held in reserve for tomorrow.`,
+    });
   }
 
   // FO workload imbalance

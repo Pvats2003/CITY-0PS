@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, Link } from "react-router-dom";
 import {
   Download,
   Upload,
@@ -9,7 +9,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   PlusCircle,
-  Pencil,
   Cpu,
 } from "lucide-react";
 import { PageHeader } from "@/components/shared/PageHeader";
@@ -34,7 +33,6 @@ import { downloadCSV, downloadJSON } from "@/lib/csv";
 import { fmtDate } from "@/lib/dates";
 import type { CityData, Rig } from "@/types";
 import { RigFormDialog } from "@/components/forms/RigFormDialog";
-import { StatusBadge } from "@/components/status";
 
 export default function Settings() {
   const data = useCity();
@@ -236,26 +234,15 @@ export default function Settings() {
                 <PlusCircle className="size-4" /> Add Rig
               </Button>
             </CardHeader>
-            <CardContent className="pt-0">
-              {data.rigs.length === 0 ? (
-                <div className="text-sm text-muted py-4 text-center">No rigs registered yet. Add your recording devices so they can be assigned to visits.</div>
-              ) : (
-                <div className="divide-y divide-border">
-                  {data.rigs.map((r) => (
-                    <div key={r.id} className="flex items-center gap-3 py-2.5">
-                      <Cpu className="size-4 text-muted shrink-0" />
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium">{r.code}</div>
-                        <div className="text-xs text-muted truncate">{r.model}</div>
-                      </div>
-                      <StatusBadge status={!r.active ? "offline" : r.condition} />
-                      <Button size="icon-sm" variant="ghost" onClick={() => { setRigTarget(r); setRigDialogOpen(true); }}>
-                        <Pencil className="size-3.5" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
+            <CardContent className="pt-0 space-y-3">
+              <p className="text-sm text-muted">
+                Rig health, readiness, incident history, and repairs now live in Fleet — a dedicated command center for the fleet.
+              </p>
+              <Button asChild size="sm" variant="secondary">
+                <Link to="/fleet">
+                  <Cpu className="size-4" /> Open Fleet ({data.rigs.length} rig{data.rigs.length === 1 ? "" : "s"})
+                </Link>
+              </Button>
             </CardContent>
           </Card>
         )}

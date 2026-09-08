@@ -12,6 +12,8 @@ import BusinessDetail from "@/pages/BusinessDetail";
 import FieldOfficers from "@/pages/FieldOfficers";
 import FieldOfficerDetail from "@/pages/FieldOfficerDetail";
 import FOExecution from "@/pages/FOExecution";
+import Fleet from "@/pages/Fleet";
+import RigDetail from "@/pages/RigDetail";
 import Sessions from "@/pages/Sessions";
 import SessionDetail from "@/pages/SessionDetail";
 import Issues from "@/pages/Issues";
@@ -48,6 +50,8 @@ function App() {
             <Route path="/businesses/:id" element={<BusinessDetail />} />
             <Route path="/field-officers" element={<FieldOfficers />} />
             <Route path="/field-officers/:id" element={<FieldOfficerDetail />} />
+            <Route path="/fleet" element={<Fleet />} />
+            <Route path="/fleet/:id" element={<RigDetail />} />
             <Route path="/sessions" element={<Sessions />} />
             <Route path="/sessions/:id" element={<SessionDetail />} />
             <Route path="/issues" element={<Issues />} />

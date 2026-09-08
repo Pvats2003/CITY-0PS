@@ -4,6 +4,10 @@ export function byId<T extends { id: string }>(items: T[]): Map<string, T> {
   return new Map(items.map((i) => [i.id, i]));
 }
 
+export function overlaps(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
+  return new Date(aStart).getTime() < new Date(bEnd).getTime() && new Date(bStart).getTime() < new Date(aEnd).getTime();
+}
+
 export function assignmentsForDate(data: CityData, date: string): Assignment[] {
   return data.assignments.filter((a) => a.date === date);
 }

@@ -9,7 +9,7 @@ import { todayISO } from "@/lib/dates";
 
 const KINDS = [
   { value: "fo_unavailable", label: "FO becomes unavailable" },
-  { value: "rig_unavailable", label: "Rig fails" },
+  { value: "rig_unavailable", label: "Rig fails / becomes unsafe" },
   { value: "business_cancelled", label: "Business cancels" },
 ] as const;
 
@@ -23,7 +23,11 @@ export function ReplanPanel() {
   const [applied, setApplied] = useState(false);
 
   const targets =
-    kind === "fo_unavailable" ? data.fos.filter((f) => f.active) : kind === "rig_unavailable" ? data.rigs.filter((r) => r.active) : data.businesses.filter((b) => b.active);
+    kind === "fo_unavailable"
+      ? data.fos.filter((f) => f.active)
+      : kind === "rig_unavailable"
+        ? data.rigs.filter((r) => r.deploymentStatus !== "retired")
+        : data.businesses.filter((b) => b.active);
 
   function run() {
     if (!targetId) return;
@@ -103,9 +107,18 @@ export function ReplanPanel() {
             <div className="text-sm font-medium">PLAN IMPACT</div>
             <div className="text-sm text-muted">{result.note}</div>
             {result.suggestions.length > 0 && (
-              <ol className="space-y-1 list-decimal list-inside text-sm">
+              <ol className="space-y-2 list-decimal list-inside text-sm">
                 {result.suggestions.map((s, i) => (
-                  <li key={i}>{s.description}</li>
+                  <li key={i}>
+                    {s.description}
+                    {s.why && s.why.length > 0 && (
+                      <div className="ml-5 mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-success">
+                        {s.why.map((w, j) => (
+                          <span key={j}>✓ {w}</span>
+                        ))}
+                      </div>
+                    )}
+                  </li>
                 ))}
               </ol>
             )}

@@ -1,5 +1,7 @@
 import { id } from "@/lib/id";
 import { isoAtTime } from "@/lib/dates";
+import { overlaps } from "./selectors";
+import { buildRigSummary, isDeployable, proposeRigReplacement, type RigSummary } from "./rigGuardian";
 import type { Assignment, CityData, CitySettings, PlanConflict, Severity } from "@/types";
 
 export interface ScoreBreakdownItem {
@@ -12,10 +14,6 @@ export interface PlanResult {
   conflicts: PlanConflict[];
   score: number;
   breakdown: ScoreBreakdownItem[];
-}
-
-function overlaps(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
-  return new Date(aStart).getTime() < new Date(bEnd).getTime() && new Date(bStart).getTime() < new Date(aEnd).getTime();
 }
 
 export function detectConflicts(assignments: Assignment[], data: CityData, date: string): PlanConflict[] {
@@ -72,14 +70,27 @@ export function detectConflicts(assignments: Assignment[], data: CityData, date:
         assignmentIds: [a.id],
       });
     }
-    if (rig && (rig.condition === "offline" || !rig.active)) {
-      conflicts.push({
-        id: id("cf"),
-        type: "rig_unavailable",
-        severity: "warning",
-        message: `Rig ${rig.code} is offline and assigned to ${biz?.name ?? "a business"}.`,
-        assignmentIds: [a.id],
-      });
+    if (rig) {
+      if (rig.deploymentStatus === "retired") {
+        conflicts.push({
+          id: id("cf"),
+          type: "rig_unavailable",
+          severity: "critical",
+          message: `Rig ${rig.code} is retired and assigned to ${biz?.name ?? "a business"}.`,
+          assignmentIds: [a.id],
+        });
+      } else {
+        const summary = buildRigSummary(data, rig);
+        if (!isDeployable(summary.readiness)) {
+          conflicts.push({
+            id: id("cf"),
+            type: "rig_unsafe",
+            severity: "critical",
+            message: `Rig ${rig.code} is ${summary.readiness === "in_repair" ? "in repair" : "DO NOT DEPLOY"} (${summary.readinessReason}) but assigned to ${biz?.name ?? "a business"}.`,
+            assignmentIds: [a.id],
+          });
+        }
+      }
     }
     const durationMin = (new Date(a.plannedEnd).getTime() - new Date(a.plannedStart).getTime()) / 60000;
     if (durationMin < 20) {
@@ -141,11 +152,13 @@ export function scorePlan(
   const warnings = conflicts.filter((c) => c.severity === "warning").length;
   const foConflicts = conflicts.filter((c) => c.type === "fo_double_booking").length;
   const rigConflicts = conflicts.filter((c) => c.type === "rig_double_booking").length;
+  const unsafeRigs = conflicts.filter((c) => c.type === "rig_unsafe").length;
 
   breakdown.push({ label: `${foConflicts} FO conflict${foConflicts === 1 ? "" : "s"}`, delta: -25 * foConflicts });
   breakdown.push({ label: `${rigConflicts} rig conflict${rigConflicts === 1 ? "" : "s"}`, delta: -25 * rigConflicts });
+  if (unsafeRigs > 0) breakdown.push({ label: `${unsafeRigs} unsafe rig assignment${unsafeRigs === 1 ? "" : "s"}`, delta: -30 * unsafeRigs });
 
-  const otherCritical = critical - foConflicts - rigConflicts;
+  const otherCritical = critical - foConflicts - rigConflicts - unsafeRigs;
   if (otherCritical > 0) breakdown.push({ label: `${otherCritical} unavailable resource conflict${otherCritical === 1 ? "" : "s"}`, delta: -20 * otherCritical });
   if (warnings > 0) breakdown.push({ label: `${warnings} capacity/timing warning${warnings === 1 ? "" : "s"}`, delta: -8 * warnings });
 
@@ -179,7 +192,14 @@ export function proposeDailyPlan(data: CityData, date: string, settings: CitySet
   const already = new Set(data.assignments.filter((a) => a.date === date && a.status !== "cancelled").map((a) => a.businessId));
   const activeBusinesses = data.businesses.filter((b) => b.active && !already.has(b.id) && !b.unavailableDates?.includes(date));
   const activeFOs = data.fos.filter((f) => f.active && !f.unavailableDates?.includes(date));
-  const activeRigs = data.rigs.filter((r) => r.active && r.condition !== "offline");
+  // Rig safety (spec #15): the planner only ever proposes deployable rigs,
+  // healthiest first — do-not-deploy / in-repair / retired rigs are never
+  // silently assigned.
+  const rigSummaries: RigSummary[] = data.rigs
+    .filter((r) => r.deploymentStatus !== "retired")
+    .map((r) => buildRigSummary(data, r))
+    .filter((s) => s.deployable)
+    .sort((a, b) => b.score - a.score);
 
   if (activeFOs.length === 0 || activeBusinesses.length === 0) {
     return { assignments: [], conflicts: [], score: 0, breakdown: [{ label: "No available FOs or businesses to plan", delta: 0 }] };
@@ -234,11 +254,10 @@ export function proposeDailyPlan(data: CityData, date: string, settings: CitySet
     const plannedStart = isoAtTime(date, startHHMM);
     const plannedEnd = new Date(new Date(plannedStart).getTime() + durationMin * 60000).toISOString();
 
-    // pick rig with no overlap
+    // pick the healthiest deployable rig with no time overlap
     const rig =
-      activeRigs.find(
-        (r) => !rigBusy.some((rb) => rb.rigId === r.id && startMin < rb.end && startMin + durationMin > rb.start),
-      ) ?? activeRigs[0];
+      rigSummaries.find((s) => !rigBusy.some((rb) => rb.rigId === s.rig.id && startMin < rb.end && startMin + durationMin > rb.start))?.rig ??
+      rigSummaries[0]?.rig;
 
     const collector = data.collectors.find((c) => c.businessId === biz.id && c.active);
 
@@ -273,6 +292,7 @@ export interface ReplanSuggestion {
   assignmentId: string;
   description: string;
   patch: Partial<Assignment>;
+  why?: string[];
 }
 
 export function proposeReplan(
@@ -312,14 +332,19 @@ export function proposeReplan(
       continue;
     }
     if (disruption.kind === "rig_unavailable") {
-      const altRig = data.rigs.find(
-        (r) => r.active && r.condition !== "offline" && r.id !== disruption.rigId,
-      );
-      if (altRig) {
+      const replacement = proposeRigReplacement(data, date, disruption.rigId!, a.plannedStart, a.plannedEnd);
+      if (replacement) {
         suggestions.push({
           assignmentId: a.id,
-          description: `Swap to rig ${altRig.code} for ${bizMap.get(a.businessId)?.name ?? "this visit"}.`,
-          patch: { rigId: altRig.id },
+          description: `Swap to rig ${replacement.rig.code} for ${bizMap.get(a.businessId)?.name ?? "this visit"}.`,
+          patch: { rigId: replacement.rig.id },
+          why: replacement.reasons,
+        });
+      } else {
+        suggestions.push({
+          assignmentId: a.id,
+          description: `No healthy rig available — recommend moving ${bizMap.get(a.businessId)?.name ?? "this visit"} to tomorrow.`,
+          patch: { status: "cancelled" },
         });
       }
       continue;

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
-import { Copy, Download, Printer, CheckCircle2, X, Lightbulb, TrendingUp } from "lucide-react";
+import { Copy, Download, Printer, CheckCircle2, X, Lightbulb, TrendingUp, Cpu } from "lucide-react";
 import { PageHeader } from "@/components/shared/PageHeader";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,6 +10,7 @@ import { StatusBadge } from "@/components/status";
 import { useCity } from "@/store/city";
 import { todayISO, fmtDate, fmtTime, fmtHours } from "@/lib/dates";
 import { buildSOD, buildMOD, buildEOD, buildTomorrowRecommendations } from "@/engine/reports";
+import { requestRigInspection } from "@/engine/workflows";
 
 export default function Reports() {
   const data = useCity();
@@ -73,6 +74,10 @@ export default function Reports() {
         ...eod.lostHours.breakdown.map((b) => `  - ${b.label}: -${b.hours}h`),
         `City Health: ${eod.healthScore}/100`,
         ``,
+        `FLEET / RIG PERFORMANCE`,
+        `Rig incidents: ${eod.rigPerformance.incidentCount} · Lost hours: ${eod.rigPerformance.lostHours}h`,
+        ...(eod.rigPerformance.actionForTomorrow ? [`Action for tomorrow: ${eod.rigPerformance.actionForTomorrow}`] : []),
+        ``,
         `NARRATIVE`,
         eod.narrative,
       ].join("\n");
@@ -112,6 +117,12 @@ export default function Reports() {
         preferredWindowStart: rec.patch.time,
         preferredWindowEnd: `${String(endH).padStart(2, "0")}:${String(m).padStart(2, "0")}`,
       });
+    }
+    if (rec.patch?.rigId) {
+      requestRigInspection(rec.patch.rigId, rec.reasoning);
+    }
+    if (rec.patch?.replaceRigId) {
+      requestRigInspection(rec.patch.replaceRigId, rec.reasoning);
     }
     logActivity({ type: "plan_changed", entityKind: "plan", entityId: recId, summary: `Applied recommendation: ${rec.description}` });
     setApplied((s) => new Set(s).add(recId));
@@ -251,6 +262,54 @@ export default function Reports() {
                     ))}
                   </ul>
                 </>
+              )}
+            </Section>
+
+            <Section title="Fleet / Rig Performance">
+              {eod.rigPerformance.incidentCount === 0 ? (
+                <div className="text-sm text-success">No rig incidents today.</div>
+              ) : (
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1.5 text-muted">
+                      <Cpu className="size-3.5" /> Incidents
+                    </span>
+                    <span className="tabular-nums">{eod.rigPerformance.incidentCount}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted">Lost recording hours</span>
+                    <span className="text-critical tabular-nums">−{fmtHours(eod.rigPerformance.lostHours)}</span>
+                  </div>
+                  {eod.rigPerformance.worstAffectedRig && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted">Worst affected rig</span>
+                      <Link to={`/fleet/${eod.rigPerformance.worstAffectedRig.id}`} className="hover:underline tabular-nums">
+                        {eod.rigPerformance.worstAffectedRig.code} ({eod.rigPerformance.worstAffectedRig.incidentCount})
+                      </Link>
+                    </div>
+                  )}
+                  {eod.rigPerformance.rigsNeedingInspection.length > 0 && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted">Needs inspection</span>
+                      <span className="tabular-nums">
+                        {eod.rigPerformance.rigsNeedingInspection.map((r, i) => (
+                          <span key={r.id}>
+                            {i > 0 && ", "}
+                            <Link to={`/fleet/${r.id}`} className="hover:underline">
+                              {r.code}
+                            </Link>
+                          </span>
+                        ))}
+                      </span>
+                    </div>
+                  )}
+                  {eod.rigPerformance.actionForTomorrow && (
+                    <div className="border-t border-border pt-2 mt-2 flex items-start gap-1.5">
+                      <Lightbulb className="size-3.5 shrink-0 mt-0.5 text-muted" />
+                      {eod.rigPerformance.actionForTomorrow}
+                    </div>
+                  )}
+                </div>
               )}
             </Section>
 

@@ -15,6 +15,8 @@ import type {
   Issue,
   QualityReview,
   CorrectiveAction,
+  RigIncident,
+  RepairRecord,
   ActivityEvent,
   DailyPlan,
   DailyReport,
@@ -22,7 +24,11 @@ import type {
 } from "@/types";
 
 export const STORAGE_KEY = "city-ops-os";
-export const DATA_VERSION = 1;
+// Bumped for Rig Guardian: Rig/RigIncident/RepairRecord shapes changed
+// (dropped `condition`, added deploymentStatus + incident/repair tracking).
+// Older persisted state is incompatible, so it's discarded on load rather
+// than risk the new engine crashing on missing fields.
+export const DATA_VERSION = 2;
 
 export const DEFAULT_SETTINGS: CitySettings = {
   cityName: "My City",
@@ -48,6 +54,8 @@ export function emptyCityData(): CityData {
     issues: [],
     qualityReviews: [],
     correctiveActions: [],
+    rigIncidents: [],
+    repairRecords: [],
     activity: [],
     plans: [],
     reports: [],
@@ -80,6 +88,12 @@ interface CityActions {
   // rig
   addRig: (r: Omit<Rig, "id" | "createdAt">) => Rig;
   updateRig: (id: string, patch: Partial<Rig>) => void;
+
+  // rig incidents / repairs (Rig Guardian)
+  addRigIncident: (i: Omit<RigIncident, "id" | "createdAt">) => RigIncident;
+  updateRigIncident: (id: string, patch: Partial<RigIncident>) => void;
+  addRepairRecord: (r: Omit<RepairRecord, "id" | "createdAt">) => RepairRecord;
+  updateRepairRecord: (id: string, patch: Partial<RepairRecord>) => void;
 
   // assignment
   addAssignment: (a: Omit<Assignment, "id" | "createdAt">) => Assignment;
@@ -205,6 +219,31 @@ export const useCity = create<CityStore>()(
       updateRig: (rid, patch) =>
         set((s) => {
           const r = s.rigs.find((x) => x.id === rid);
+          if (r) Object.assign(r, patch);
+        }),
+
+      addRigIncident: (i) => {
+        const item: RigIncident = { ...i, id: id("rin"), createdAt: nowISO() };
+        set((s) => {
+          s.rigIncidents.push(item);
+        });
+        return item;
+      },
+      updateRigIncident: (rid, patch) =>
+        set((s) => {
+          const r = s.rigIncidents.find((x) => x.id === rid);
+          if (r) Object.assign(r, patch);
+        }),
+      addRepairRecord: (r) => {
+        const item: RepairRecord = { ...r, id: id("rep_rec"), createdAt: nowISO() };
+        set((s) => {
+          s.repairRecords.push(item);
+        });
+        return item;
+      },
+      updateRepairRecord: (rrid, patch) =>
+        set((s) => {
+          const r = s.repairRecords.find((x) => x.id === rrid);
           if (r) Object.assign(r, patch);
         }),
 
@@ -354,6 +393,10 @@ export const useCity = create<CityStore>()(
       name: STORAGE_KEY,
       storage: createJSONStorage(() => localStorage),
       version: DATA_VERSION,
+      migrate: (persisted, version) => {
+        if (version < DATA_VERSION) return emptyCityData();
+        return persisted;
+      },
     },
   ),
 );

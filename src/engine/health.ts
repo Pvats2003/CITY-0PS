@@ -1,5 +1,6 @@
 import type { CityData } from "@/types";
 import { assignmentsForDate, issuesForDate, recordedHoursForDate } from "./selectors";
+import { computeRigHealth } from "./rigGuardian";
 
 export interface ScoreDelta {
   label: string;
@@ -17,13 +18,6 @@ export interface CityHealth {
   deltas: ScoreDelta[];
   categories: CategoryScore[];
 }
-
-const RIG_HEALTH_POINTS: Record<string, number> = {
-  healthy: 100,
-  warning: 60,
-  critical: 20,
-  offline: 0,
-};
 
 export function computeCityHealth(data: CityData, date: string, target: number): CityHealth {
   const assignments = assignmentsForDate(data, date);
@@ -110,11 +104,8 @@ export function computeCityHealth(data: CityData, date: string, target: number):
   const qualityPct = reviews.length > 0 ? ((pass.length * 100 + warn.length * 50) / reviews.length) : 100;
   const plannedTotal = assignments.length;
   const businessReliabilityPct = plannedTotal > 0 ? ((plannedTotal - rejected.length) / plannedTotal) * 100 : 100;
-  const activeRigs = data.rigs.filter((r) => r.active || r.condition !== "offline");
-  const deviceHealthPct =
-    activeRigs.length > 0
-      ? activeRigs.reduce((sum, r) => sum + (RIG_HEALTH_POINTS[r.condition] ?? 50), 0) / activeRigs.length
-      : 100;
+  const nonRetiredRigs = data.rigs.filter((r) => r.deploymentStatus !== "retired");
+  const deviceHealthPct = nonRetiredRigs.length > 0 ? nonRetiredRigs.reduce((sum, r) => sum + computeRigHealth(data, r).score, 0) / nonRetiredRigs.length : 100;
 
   const categories: CategoryScore[] = [
     { key: "execution", label: "Execution", value: Math.round(executionPct) },

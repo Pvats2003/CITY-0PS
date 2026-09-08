@@ -17,16 +17,20 @@ import {
   AlertTriangle,
   PlayCircle,
   StopCircle,
+  ShieldAlert,
 } from "lucide-react";
 import { useCity } from "@/store/city";
 import { todayISO, fmtTime } from "@/lib/dates";
-import { checkInAssignment, startSessionForAssignment, completeSession } from "@/engine/workflows";
+import { checkInAssignment, startSessionForAssignment, logRigPreflightPassed } from "@/engine/workflows";
+import { buildRigSummary, isDeployable } from "@/engine/rigGuardian";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/status";
 import { cn } from "@/lib/utils";
 import { IssueFormDialog } from "@/components/forms/IssueFormDialog";
+import { RigIncidentFormDialog } from "@/components/forms/RigIncidentFormDialog";
+import { PostSessionCheckDialog } from "@/components/forms/PostSessionCheckDialog";
 import type { Assignment } from "@/types";
 
 type BottomTab = "today" | "map" | "scan" | "alerts" | "profile";
@@ -164,6 +168,8 @@ function TodayList({ assignments, onSelect }: { assignments: Assignment[]; onSel
 function ExecutionFlow({ assignment }: { assignment: Assignment }) {
   const data = useCity();
   const business = data.businesses.find((b) => b.id === assignment.businessId);
+  const rig = data.rigs.find((r) => r.id === assignment.rigId);
+  const rigSummary = rig ? buildRigSummary(data, rig) : null;
   const session = data.sessions.find((s) => s.id === assignment.sessionId && s.status !== "completed") ?? (assignment.sessionId ? data.sessions.find((s) => s.id === assignment.sessionId) : undefined);
   const [checklist, setChecklist] = useState({
     confirmedBusiness: false,
@@ -174,6 +180,8 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
     capturedEvidence: false,
   });
   const [issueOpen, setIssueOpen] = useState(false);
+  const [preflightIssueOpen, setPreflightIssueOpen] = useState(false);
+  const [postCheckOpen, setPostCheckOpen] = useState(false);
 
   if (assignment.status === "completed") {
     return (
@@ -211,9 +219,36 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
   }
 
   if (!session) {
+    if (rigSummary && !isDeployable(rigSummary.readiness)) {
+      return (
+        <div className="p-4 space-y-4">
+          <div className="rounded-xl border border-critical/30 bg-critical-bg p-5 text-center space-y-2">
+            <ShieldAlert className="size-10 text-critical mx-auto" />
+            <div className="text-base font-bold text-critical">THIS RIG SHOULD NOT BE DEPLOYED</div>
+            <div className="text-sm text-critical/90">
+              {rig?.code}: {rigSummary.readinessReason}
+            </div>
+          </div>
+          <Button size="lg" variant="destructive" className="w-full h-14 text-base" onClick={() => setPreflightIssueOpen(true)}>
+            <AlertTriangle className="size-5" /> Report Rig Issue
+          </Button>
+          <div className="text-xs text-muted text-center">Contact dispatch for a replacement rig before starting this visit.</div>
+          {rig && (
+            <RigIncidentFormDialog
+              open={preflightIssueOpen}
+              onOpenChange={setPreflightIssueOpen}
+              rigId={rig.id}
+              defaultDiscoveryStage="preflight"
+              defaults={{ businessId: assignment.businessId, foId: assignment.foId, assignmentId: assignment.id }}
+            />
+          )}
+        </div>
+      );
+    }
+
     const items: { key: keyof typeof checklist; label: string }[] = [
       { key: "confirmedBusiness", label: "Confirm business" },
-      { key: "scannedRig", label: "Scan rig" },
+      { key: "scannedRig", label: "30-second rig preflight (power, cameras, cables, storage)" },
       { key: "checkedBattery", label: "Check battery" },
       { key: "checkedStorage", label: "Check storage" },
       { key: "confirmedCollector", label: "Confirm collector" },
@@ -222,7 +257,7 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
     const allDone = items.every((i) => checklist[i.key]);
     return (
       <div className="p-4 space-y-4">
-        <Section title="SETUP">
+        <Section title="RIG PREFLIGHT">
           <div className="space-y-2.5">
             {items.map((i) => (
               <label key={i.key} className="flex items-center gap-3 py-1">
@@ -231,15 +266,32 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
               </label>
             ))}
           </div>
+          {rig && (
+            <button className="text-xs text-critical mt-3 flex items-center gap-1.5" onClick={() => setPreflightIssueOpen(true)}>
+              <AlertTriangle className="size-3.5" /> Something's wrong with this rig
+            </button>
+          )}
         </Section>
         <Button
           size="lg"
           className="w-full h-14 text-base"
           disabled={!allDone}
-          onClick={() => startSessionForAssignment(assignment, checklist)}
+          onClick={() => {
+            if (rig) logRigPreflightPassed(rig.id);
+            startSessionForAssignment(assignment, checklist);
+          }}
         >
           <PlayCircle className="size-5" /> Start Session
         </Button>
+        {rig && (
+          <RigIncidentFormDialog
+            open={preflightIssueOpen}
+            onOpenChange={setPreflightIssueOpen}
+            rigId={rig.id}
+            defaultDiscoveryStage="preflight"
+            defaults={{ businessId: assignment.businessId, foId: assignment.foId, assignmentId: assignment.id }}
+          />
+        )}
       </div>
     );
   }
@@ -268,7 +320,7 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
         <Button variant="secondary" className="w-full h-12" onClick={() => setIssueOpen(true)}>
           <AlertTriangle className="size-4" /> Report Issue
         </Button>
-        <Button size="lg" variant="destructive" className="w-full h-14 text-base" onClick={() => completeSession(session.id)}>
+        <Button size="lg" variant="destructive" className="w-full h-14 text-base" onClick={() => setPostCheckOpen(true)}>
           <StopCircle className="size-5" /> End Session
         </Button>
         <IssueFormDialog
@@ -276,6 +328,7 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
           onOpenChange={setIssueOpen}
           defaults={{ businessId: assignment.businessId, foId: assignment.foId, rigId: assignment.rigId, sessionId: session.id, assignmentId: assignment.id }}
         />
+        <PostSessionCheckDialog open={postCheckOpen} onOpenChange={setPostCheckOpen} session={session} />
       </div>
     );
   }
@@ -291,9 +344,10 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
         </div>
         <Textarea placeholder="Notes (optional)" className="mt-3" rows={3} />
       </Section>
-      <Button size="lg" className="w-full h-14 text-base" onClick={() => completeSession(session.id)}>
+      <Button size="lg" className="w-full h-14 text-base" onClick={() => setPostCheckOpen(true)}>
         <CheckCircle2 className="size-5" /> Complete Visit
       </Button>
+      <PostSessionCheckDialog open={postCheckOpen} onOpenChange={setPostCheckOpen} session={session} />
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import type { CityData, Business, FieldOfficer, Rig, Session, Issue } from "@/types";
 import { daysBack } from "./selectors";
+import { buildRigSummary } from "./rigGuardian";
 
 export interface BusinessStats {
   totalVisits: number;
@@ -181,15 +182,14 @@ export function foInsightText(stats: FOStats): string {
 
 export function rigInsightText(data: CityData, rig: Rig): string {
   const sessions = data.sessions.filter((s) => s.rigId === rig.id);
-  if (sessions.length === 0) return "Insufficient historical data.";
+  const summary = buildRigSummary(data, rig);
   const parts: string[] = [];
   if (sessions.length >= 8) parts.push("High utilization.");
-  if (rig.condition === "critical" || rig.condition === "offline") parts.push("Needs immediate inspection.");
-  else if (rig.condition === "warning") parts.push("Maintenance due soon.");
-  if (rig.lastServiceAt) {
-    const daysSince = Math.round((Date.now() - new Date(rig.lastServiceAt).getTime()) / 86_400_000);
-    if (daysSince > 45) parts.push(`Last serviced ${daysSince} days ago.`);
-  }
+  if (summary.readiness === "do_not_deploy") parts.push("Needs immediate inspection.");
+  else if (summary.readiness === "in_repair") parts.push("Currently in repair.");
+  else if (summary.readiness === "inspection_required") parts.push("Inspection recommended soon.");
+  if (summary.repeatedFailures.length > 0) parts.push(summary.repeatedFailures[0].message);
+  if (sessions.length === 0 && parts.length === 0) return "Insufficient historical data.";
   if (parts.length === 0) parts.push("Operating normally.");
   return parts.join(" ");
 }

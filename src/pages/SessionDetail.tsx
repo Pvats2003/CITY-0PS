@@ -25,9 +25,9 @@ import { StatusBadge } from "@/components/status";
 import { Progress } from "@/components/ui/progress";
 import { ActivityTimeline } from "@/components/shared/ActivityTimeline";
 import { IssueFormDialog } from "@/components/forms/IssueFormDialog";
+import { PostSessionCheckDialog } from "@/components/forms/PostSessionCheckDialog";
 import { fmtDate, fmtTime, fmtDuration, fmtHours } from "@/lib/dates";
 import { sessionInsightText } from "@/engine/insights";
-import { completeSession } from "@/engine/workflows";
 import { id as genId } from "@/lib/id";
 import { downloadJSON } from "@/lib/csv";
 
@@ -37,6 +37,7 @@ export default function SessionDetail() {
   const addEvidence = useCity((s) => s.addEvidence);
   const updateEvidence = useCity((s) => s.updateEvidence);
   const [issueOpen, setIssueOpen] = useState(false);
+  const [postCheckOpen, setPostCheckOpen] = useState(false);
   const [notes, setNotes] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -142,7 +143,7 @@ export default function SessionDetail() {
               <Button size="sm" variant="secondary" onClick={() => setIssueOpen(true)}>
                 <AlertTriangle className="size-4" /> Report Issue
               </Button>
-              <Button size="sm" onClick={() => completeSession(session.id)}>
+              <Button size="sm" onClick={() => setPostCheckOpen(true)}>
                 <StopCircle className="size-4" /> End Session
               </Button>
             </>
@@ -306,6 +307,7 @@ export default function SessionDetail() {
         onOpenChange={setIssueOpen}
         defaults={{ businessId: session.businessId, foId: session.foId, rigId: session.rigId, sessionId: session.id }}
       />
+      <PostSessionCheckDialog open={postCheckOpen} onOpenChange={setPostCheckOpen} session={session} />
     </div>
   );
 }

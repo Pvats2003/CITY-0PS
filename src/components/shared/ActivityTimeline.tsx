@@ -18,6 +18,10 @@ import {
   Sunrise,
   Sunset,
   StickyNote,
+  Wrench,
+  ClipboardCheck,
+  Archive,
+  SlidersHorizontal,
 } from "lucide-react";
 import type { ActivityEvent, ActivityEventType } from "@/types";
 import { fmtTime, fmtDate } from "@/lib/dates";
@@ -44,6 +48,17 @@ const ICONS: Record<ActivityEventType, React.ComponentType<{ className?: string 
   day_started: Sunrise,
   day_ended: Sunset,
   note: StickyNote,
+  rig_preflight_passed: ClipboardCheck,
+  rig_incident_reported: AlertTriangle,
+  rig_incident_status_changed: SlidersHorizontal,
+  rig_incident_resolved: CheckCircle2,
+  rig_repair_logged: Wrench,
+  rig_repair_test_passed: ShieldCheck,
+  rig_repair_test_failed: ShieldX,
+  rig_inspection_completed: ClipboardCheck,
+  rig_inspection_requested: ClipboardList,
+  rig_retired: Archive,
+  rig_status_override: SlidersHorizontal,
 };
 
 const COLOR: Record<ActivityEventType, string> = {
@@ -67,6 +82,17 @@ const COLOR: Record<ActivityEventType, string> = {
   day_started: "text-muted",
   day_ended: "text-muted",
   note: "text-muted",
+  rig_preflight_passed: "text-success",
+  rig_incident_reported: "text-critical",
+  rig_incident_status_changed: "text-muted",
+  rig_incident_resolved: "text-success",
+  rig_repair_logged: "text-warning",
+  rig_repair_test_passed: "text-success",
+  rig_repair_test_failed: "text-critical",
+  rig_inspection_completed: "text-success",
+  rig_inspection_requested: "text-warning",
+  rig_retired: "text-muted",
+  rig_status_override: "text-warning",
 };
 
 export function ActivityTimeline({

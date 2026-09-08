@@ -1,5 +1,7 @@
 import type { CityData, Status } from "@/types";
 import { fmtDate } from "@/lib/dates";
+import { buildRigSummary } from "./rigGuardian";
+import { readinessToStatus } from "./rigTaxonomy";
 
 export interface SearchResult {
   kind: "business" | "fo" | "collector" | "rig" | "session" | "issue";
@@ -59,14 +61,15 @@ export function buildSearchIndex(data: CityData): SearchResult[] {
   }
 
   for (const r of data.rigs) {
+    const summary = buildRigSummary(data, r);
     results.push({
       kind: "rig",
       id: r.id,
       title: r.code,
       subtitle: r.model,
-      metric: `${r.batteryPct}% battery`,
-      status: r.condition,
-      to: `/sessions`,
+      metric: `${summary.score}/100 health`,
+      status: readinessToStatus(summary.readiness),
+      to: `/fleet/${r.id}`,
     });
   }
 

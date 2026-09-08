@@ -2,6 +2,7 @@ import { id } from "@/lib/id";
 import { emptyCityData } from "@/store/city";
 import { mulberry32, pick, pickN, randInt, chance, type Rand } from "./rng";
 import { BUSINESS_SEEDS, FO_SEEDS, COLLECTOR_NAMES, RIG_MODELS } from "./data";
+import { ISSUE_TYPE_BY_GROUP, categoryGroup, categoryLabel } from "@/engine/rigTaxonomy";
 import type {
   CityData,
   Business,
@@ -13,13 +14,25 @@ import type {
   Issue,
   QualityReview,
   IssueType,
+  DamageCategory,
+  RigIncident,
+  RepairRecord,
   ActivityEvent,
   AssignmentStatus,
+  DiscoveryStage,
+  Severity,
 } from "@/types";
 
 const HISTORY_DAYS = 7; // includes today
 const DEMO_REFERENCE_HOUR = 14; // "now" used for today's status mix, so the
 // app always looks alive regardless of the wall-clock time it's opened.
+
+const RIG_COUNT = 10;
+// Designated "problem rigs" (spec: "3-4 out of 10 rigs experience damage").
+const CABLE_REPEAT_RIG_IDX = 1; // repeated cable/physical failures -> pattern detection
+const CRITICAL_TODAY_RIG_IDX = 3; // fresh critical incident discovered today -> DO NOT DEPLOY
+const INSPECTION_DUE_RIG_IDX = 6; // never inspected, aging -> inspection required
+const REPAIR_HISTORY_RIG_IDX = 8; // resolved incident + repair record on file
 
 function dateNDaysAgo(n: number): string {
   const d = new Date();
@@ -86,23 +99,26 @@ function buildEntities(rand: Rand): BuiltEntities {
     createdAt: new Date().toISOString(),
   }));
 
-  const rigs: Rig[] = Array.from({ length: 8 }).map((_, i) => {
-    const battery = randInt(35, 100, rand);
-    const storage = randInt(10, 85, rand);
-    let condition: Rig["condition"] = "healthy";
-    if (i === 7) condition = "offline";
-    else if (battery < 45 || storage > 80) condition = "warning";
-    if (i === 3 && chance(0.5, rand)) condition = "critical";
+  // 10 rigs, all created well over a month ago so history-based scoring
+  // (long healthy streak, inspection age) behaves realistically from day one.
+  const rigs: Rig[] = Array.from({ length: RIG_COUNT }).map((_, i) => {
+    const battery = randInt(55, 100, rand);
+    const storage = randInt(10, 60, rand);
+    const createdAt = new Date(Date.now() - randInt(90, 240, rand) * 86400000).toISOString();
+    // Most rigs were inspected recently; the designated "needs inspection"
+    // rig (index INSPECTION_DUE_RIG_IDX) is deliberately left never-inspected.
+    const lastInspectionAt = i === INSPECTION_DUE_RIG_IDX ? undefined : new Date(Date.now() - randInt(4, 25, rand) * 86400000).toISOString();
     return {
       id: id("rig"),
       code: `R-${String(i + 1).padStart(2, "0")}`,
       model: pick(RIG_MODELS, rand),
-      active: condition !== "offline",
+      active: true,
       batteryPct: battery,
       storagePct: storage,
-      condition,
-      lastServiceAt: new Date(Date.now() - randInt(5, 60, rand) * 86400000).toISOString(),
-      createdAt: new Date(Date.now() - randInt(60, 300, rand) * 86400000).toISOString(),
+      deploymentStatus: "active",
+      lastInspectionAt,
+      lastServiceAt: lastInspectionAt,
+      createdAt,
     };
   });
 
@@ -135,6 +151,8 @@ interface Accumulators {
   sessions: Session[];
   issues: Issue[];
   qualityReviews: QualityReview[];
+  rigIncidents: RigIncident[];
+  repairRecords: RepairRecord[];
   activity: ActivityEvent[];
 }
 
@@ -443,28 +461,9 @@ function generateDay(ctx: DayContext, ents: BuiltEntities, rand: Rand, acc: Accu
           });
         }
 
-        if (rig.condition !== "healthy" && chance(0.4, rand)) {
-          const type: IssueType = rig.condition === "critical" ? "rig_failure" : "battery";
-          const rigResolved = chance(0.5, rand);
-          acc.issues.push({
-            id: id("iss"),
-            type,
-            severity: rig.condition === "critical" ? "critical" : "warning",
-            title: ISSUE_TITLES[type]!,
-            description: `${rig.code} showed ${type === "rig_failure" ? "a hardware fault" : "low battery"} during the session at ${biz.name}.`,
-            businessId: biz.id,
-            foId: fo.id,
-            rigId: rig.id,
-            sessionId: sess.id,
-            assignmentId,
-            owner: "You",
-            status: rigResolved ? "resolved" : "open",
-            resolvedAt: rigResolved ? actualEnd : undefined,
-            resolution: rigResolved ? (type === "rig_failure" ? "Rig swapped out and sent for inspection." : "Rig recharged before next session.") : undefined,
-            lostHours: type === "rig_failure" ? 0.5 : 0.2,
-            createdAt: actualEnd,
-          });
-        }
+        // Rig incident history is seeded deliberately in seedRigIncidentHistory()
+        // after the day loop, so specific rigs get coherent, realistic patterns
+        // instead of independent per-session dice rolls.
 
         // quality review
         const qRoll = rand();
@@ -535,6 +534,201 @@ function generateDay(ctx: DayContext, ents: BuiltEntities, rand: Rand, acc: Accu
   });
 }
 
+interface IncidentSeed {
+  category: DamageCategory;
+  severity: Severity;
+  discoveredAt: string;
+  discoveryStage: DiscoveryStage;
+  description: string;
+  resolvedAt?: string;
+  resolution?: string;
+  lostHours: number;
+  sessionId?: string;
+  businessId?: string;
+  foId?: string;
+}
+
+function pushIncident(acc: Accumulators, rig: Rig, seed: IncidentSeed): RigIncident {
+  const group = categoryGroup(seed.category);
+  const issueId = id("iss");
+  const incidentId = id("rin");
+
+  acc.issues.push({
+    id: issueId,
+    type: ISSUE_TYPE_BY_GROUP[group],
+    severity: seed.severity,
+    title: `${rig.code}: ${categoryLabel(seed.category)}`,
+    description: seed.description,
+    businessId: seed.businessId,
+    foId: seed.foId,
+    rigId: rig.id,
+    sessionId: seed.sessionId,
+    owner: "You",
+    status: seed.resolvedAt ? "resolved" : "open",
+    lostHours: seed.lostHours,
+    createdAt: seed.discoveredAt,
+    resolvedAt: seed.resolvedAt,
+    resolution: seed.resolution,
+  });
+
+  const incident: RigIncident = {
+    id: incidentId,
+    rigId: rig.id,
+    sessionId: seed.sessionId,
+    businessId: seed.businessId,
+    foId: seed.foId,
+    category: seed.category,
+    group,
+    severity: seed.severity,
+    discoveredAt: seed.discoveredAt,
+    discoveryStage: seed.discoveryStage,
+    description: seed.description,
+    evidence: [],
+    status: seed.resolvedAt ? "resolved" : "open",
+    linkedIssueId: issueId,
+    lostHours: seed.lostHours,
+    createdAt: seed.discoveredAt,
+    resolvedAt: seed.resolvedAt,
+  };
+  acc.rigIncidents.push(incident);
+
+  acc.activity.push({
+    id: id("act"),
+    type: "rig_incident_reported",
+    at: seed.discoveredAt,
+    entityKind: "rig_incident",
+    entityId: incidentId,
+    rigId: rig.id,
+    businessId: seed.businessId,
+    foId: seed.foId,
+    sessionId: seed.sessionId,
+    issueId,
+    summary: `${rig.code}: ${categoryLabel(seed.category)} (discovered at ${seed.discoveryStage.replace("_", " ")})`,
+    detail: seed.description,
+  });
+
+  return incident;
+}
+
+/** Deliberately shapes 3-4 rigs into the exact scenarios Rig Guardian is
+ * built to catch, instead of leaving it to chance: a fresh unresolved
+ * critical cable issue (DO NOT DEPLOY today), a repeated same-group failure
+ * pattern, a never-inspected aging rig, and one fully repaired history for
+ * realism. Everything else is generated by generateDay(), so most of the
+ * fleet stays plainly healthy. */
+function seedRigIncidentHistory(ents: BuiltEntities, acc: Accumulators, rand: Rand) {
+  function sessionsFor(rigId: string): Session[] {
+    return acc.sessions.filter((s) => s.rigId === rigId).sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime());
+  }
+
+  // (a) Cable issue, discovered a few hours ago, unresolved -> DO NOT DEPLOY.
+  const cableRig = ents.rigs[CRITICAL_TODAY_RIG_IDX];
+  {
+    const sessions = sessionsFor(cableRig.id);
+    const recent = sessions[sessions.length - 1];
+    const discoveredAt = new Date();
+    discoveredAt.setHours(discoveredAt.getHours() - randInt(1, 4, rand), discoveredAt.getMinutes() - randInt(0, 59, rand));
+    pushIncident(acc, cableRig, {
+      category: "wire_broken",
+      severity: "critical",
+      discoveredAt: discoveredAt.toISOString(),
+      discoveryStage: recent ? "post_session" : "maintenance",
+      description: `A snapped internal wire was found on ${cableRig.code} during inspection. Not safe to deploy until repaired.`,
+      lostHours: 1.2,
+      sessionId: recent?.id,
+      businessId: recent?.businessId,
+      foId: recent?.foId,
+    });
+  }
+
+  // (b) Repeated same-group (camera) incidents in the last 14 days.
+  const repeatRig = ents.rigs[CABLE_REPEAT_RIG_IDX];
+  {
+    const sessions = sessionsFor(repeatRig.id);
+    const plan: { daysAgo: number; category: DamageCategory; stage: DiscoveryStage; resolved: boolean }[] = [
+      { daysAgo: 9, category: "camera_dropout", stage: "preflight", resolved: true },
+      { daysAgo: 6, category: "camera_not_detected", stage: "preflight", resolved: true },
+      { daysAgo: 2, category: "image_problem", stage: "during_recording", resolved: false },
+    ];
+    plan.forEach((p, idx) => {
+      const session = sessions[idx % Math.max(1, sessions.length)];
+      const d = new Date();
+      d.setDate(d.getDate() - p.daysAgo);
+      d.setHours(10 + idx, 20, 0, 0);
+      const resolvedAt = p.resolved ? new Date(d.getTime() + 3 * 3_600_000).toISOString() : undefined;
+      pushIncident(acc, repeatRig, {
+        category: p.category,
+        severity: "warning",
+        discoveredAt: d.toISOString(),
+        discoveryStage: p.stage,
+        description: `${categoryLabel(p.category)} reported on ${repeatRig.code}.`,
+        resolvedAt,
+        resolution: p.resolved ? "Reset and reseated the camera module; monitored on the next session." : undefined,
+        lostHours: 0.3,
+        sessionId: session?.id,
+        businessId: session?.businessId,
+        foId: session?.foId,
+      });
+    });
+  }
+
+  // (c) INSPECTION_DUE_RIG_IDX needs no incidents — buildEntities() already
+  // leaves it without a lastInspectionAt, which alone triggers the rule.
+
+  // (d) A fully closed repair loop for realism (Retire vs Repair panel,
+  // repair-turnaround metrics, "successful inspection" bonus).
+  const repairRig = ents.rigs[REPAIR_HISTORY_RIG_IDX];
+  {
+    const sessions = sessionsFor(repairRig.id);
+    const session = sessions[0];
+    const d = new Date();
+    d.setDate(d.getDate() - 20);
+    d.setHours(15, 0, 0, 0);
+    const repairedAt = new Date(d.getTime() + 2 * 86_400_000).toISOString();
+    const incident = pushIncident(acc, repairRig, {
+      category: "battery_issue",
+      severity: "critical",
+      discoveredAt: d.toISOString(),
+      discoveryStage: "during_recording",
+      description: `${repairRig.code} lost power mid-session; the battery would not hold charge.`,
+      resolvedAt: repairedAt,
+      resolution: "Battery pack replaced and load-tested.",
+      lostHours: 0.9,
+      sessionId: session?.id,
+      businessId: session?.businessId,
+      foId: session?.foId,
+    });
+
+    const repairId = id("rep_rec");
+    acc.repairRecords.push({
+      id: repairId,
+      rigId: repairRig.id,
+      incidentId: incident.id,
+      diagnosis: "Battery pack no longer holds charge under load.",
+      repairAction: "Replaced battery pack and tested under full recording load.",
+      parts: "Battery pack (OEM)",
+      beforeEvidence: [],
+      afterEvidence: [],
+      testChecklist: { power: true, cameras: true, cables: true, connectors: true, storage: true, recording: true, battery: true },
+      testResult: "pass",
+      repairedAt,
+      notes: "Rig cleared for redeployment.",
+      createdAt: d.toISOString(),
+    });
+    incident.repairRecordId = repairId;
+
+    acc.activity.push({
+      id: id("act"),
+      type: "rig_repair_test_passed",
+      at: repairedAt,
+      entityKind: "repair",
+      entityId: repairId,
+      rigId: repairRig.id,
+      summary: `Post-repair test passed for ${repairRig.code} — returned to service`,
+    });
+  }
+}
+
 export function generateDemoData(seed = 42): CityData {
   const rand = mulberry32(seed);
   const data = emptyCityData();
@@ -550,6 +744,8 @@ export function generateDemoData(seed = 42): CityData {
     sessions: [],
     issues: [],
     qualityReviews: [],
+    rigIncidents: [],
+    repairRecords: [],
     activity: [],
   };
 
@@ -566,10 +762,14 @@ export function generateDemoData(seed = 42): CityData {
     generateDay({ date, isToday, refTime }, entities, rand, acc);
   }
 
+  seedRigIncidentHistory(entities, acc, rand);
+
   data.assignments = acc.assignments;
   data.sessions = acc.sessions;
   data.issues = acc.issues;
   data.qualityReviews = acc.qualityReviews;
+  data.rigIncidents = acc.rigIncidents;
+  data.repairRecords = acc.repairRecords;
   data.activity = acc.activity.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
 
   return data;
