@@ -15,6 +15,7 @@ import {
   ShieldAlert,
   ShieldX,
   StopCircle,
+  Download,
 } from "lucide-react";
 import { useCity } from "@/store/city";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,6 +29,7 @@ import { fmtDate, fmtTime, fmtDuration, fmtHours } from "@/lib/dates";
 import { sessionInsightText } from "@/engine/insights";
 import { completeSession } from "@/engine/workflows";
 import { id as genId } from "@/lib/id";
+import { downloadJSON } from "@/lib/csv";
 
 export default function SessionDetail() {
   const { id } = useParams();
@@ -96,6 +98,17 @@ export default function SessionDetail() {
         status: "submitted",
       });
     setNotes("");
+  }
+
+  function exportEvidence() {
+    if (!evidence || !session || !business) return;
+    downloadJSON(`evidence-${business.name.replace(/\s+/g, "-").toLowerCase()}-${session.date}.json`, {
+      session: { id: session.id, business: business.name, fo: fo?.name, collector: collector?.name, rig: rig?.code, date: session.date, startedAt: session.startedAt, endedAt: session.endedAt },
+      location: evidence.lat && evidence.lng ? { lat: evidence.lat, lng: evidence.lng } : undefined,
+      notes: evidence.notes,
+      status: evidence.status,
+      files: evidence.files.map((f) => ({ name: f.name, type: f.type, sizeBytes: f.sizeBytes, capturedAt: f.capturedAt })),
+    });
   }
 
   return (
@@ -200,9 +213,16 @@ export default function SessionDetail() {
             </CardHeader>
             <CardContent className="pt-0 space-y-3">
               <input ref={fileInput} type="file" multiple hidden onChange={(e) => onFiles(e.target.files)} />
-              <Button size="sm" variant="secondary" onClick={() => fileInput.current?.click()}>
-                <Upload className="size-4" /> Add evidence files
-              </Button>
+              <div className="flex gap-2">
+                <Button size="sm" variant="secondary" onClick={() => fileInput.current?.click()}>
+                  <Upload className="size-4" /> Add evidence files
+                </Button>
+                {evidence && (
+                  <Button size="sm" variant="ghost" onClick={exportEvidence}>
+                    <Download className="size-4" /> Export Evidence
+                  </Button>
+                )}
+              </div>
               {evidence?.files.length ? (
                 <ul className="space-y-1.5">
                   {evidence.files.map((f) => (
