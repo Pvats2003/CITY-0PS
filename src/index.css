@@ -1,0 +1,149 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: 0 0% 100%;
+  --foreground: 222 20% 11%;
+
+  --surface: 220 25% 98%;
+  --surface-2: 220 20% 95%;
+  --border: 220 15% 88%;
+  --border-strong: 220 15% 78%;
+
+  --muted: 220 10% 45%;
+  --muted-2: 220 10% 60%;
+
+  --primary: 222 89% 55%;
+  --primary-foreground: 0 0% 100%;
+
+  --accent: 262 60% 55%;
+
+  --success: 152 60% 36%;
+  --success-bg: 152 55% 94%;
+  --warning: 32 90% 48%;
+  --warning-bg: 38 92% 94%;
+  --critical: 358 75% 52%;
+  --critical-bg: 358 80% 96%;
+  --info: 210 80% 52%;
+  --info-bg: 210 80% 95%;
+  --neutral: 220 10% 45%;
+  --neutral-bg: 220 15% 94%;
+
+  --ring: 222 89% 55%;
+
+  --radius: 0.625rem;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.dark {
+  --background: 222 28% 7%;
+  --foreground: 210 20% 94%;
+
+  --surface: 222 26% 9.5%;
+  --surface-2: 222 22% 13%;
+  --border: 220 18% 18%;
+  --border-strong: 220 16% 26%;
+
+  --muted: 218 10% 62%;
+  --muted-2: 218 10% 48%;
+
+  --primary: 217 91% 62%;
+  --primary-foreground: 222 30% 8%;
+
+  --accent: 262 75% 70%;
+
+  --success: 152 55% 45%;
+  --success-bg: 152 40% 14%;
+  --warning: 38 92% 55%;
+  --warning-bg: 36 60% 15%;
+  --critical: 358 80% 62%;
+  --critical-bg: 358 45% 16%;
+  --info: 210 85% 62%;
+  --info-bg: 212 50% 16%;
+  --neutral: 218 10% 62%;
+  --neutral-bg: 220 16% 16%;
+
+  --ring: 217 91% 62%;
+}
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-surface: hsl(var(--surface));
+  --color-surface-2: hsl(var(--surface-2));
+  --color-border: hsl(var(--border));
+  --color-border-strong: hsl(var(--border-strong));
+  --color-muted: hsl(var(--muted));
+  --color-muted-2: hsl(var(--muted-2));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-success: hsl(var(--success));
+  --color-success-bg: hsl(var(--success-bg));
+  --color-warning: hsl(var(--warning));
+  --color-warning-bg: hsl(var(--warning-bg));
+  --color-critical: hsl(var(--critical));
+  --color-critical-bg: hsl(var(--critical-bg));
+  --color-info: hsl(var(--info));
+  --color-info-bg: hsl(var(--info-bg));
+  --color-neutral: hsl(var(--neutral));
+  --color-neutral-bg: hsl(var(--neutral-bg));
+  --color-ring: hsl(var(--ring));
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-feature-settings: "cv11", "ss01", "tnum";
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection {
+    background-color: hsl(var(--primary) / 0.25);
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border-strong));
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+}
+
+@layer utilities {
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+}

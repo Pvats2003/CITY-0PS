@@ -1,0 +1,377 @@
+// ---------------------------------------------------------------------------
+// CITY OPS OS — core data model
+// Local-first. No server. IDs are string nanoids. Dates are ISO 8601 strings.
+// ---------------------------------------------------------------------------
+
+export type Status =
+  | "healthy"
+  | "warning"
+  | "critical"
+  | "active"
+  | "pending"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "offline"
+  | "unknown";
+
+export type Severity = "critical" | "warning" | "attention" | "opportunity";
+
+export type EntityKind =
+  | "business"
+  | "fo"
+  | "collector"
+  | "rig"
+  | "assignment"
+  | "session"
+  | "issue"
+  | "quality"
+  | "plan"
+  | "report";
+
+// --------------------------------- Business ---------------------------------
+
+export interface Business {
+  id: string;
+  name: string;
+  category: string;
+  area: string;
+  address: string;
+  lat?: number;
+  lng?: number;
+  contactName?: string;
+  contactPhone?: string;
+  preferredWindowStart?: string; // "HH:mm"
+  preferredWindowEnd?: string; // "HH:mm"
+  capacityHoursPerDay: number;
+  notes?: string;
+  active: boolean;
+  createdAt: string;
+  firstVisitAt?: string;
+  unavailableDates?: string[]; // ISO date strings, business closed/unavailable
+}
+
+// ------------------------------ Field Officer -------------------------------
+
+export interface FieldOfficer {
+  id: string;
+  name: string;
+  phone?: string;
+  photoUrl?: string;
+  homeArea?: string;
+  active: boolean;
+  createdAt: string;
+  unavailableDates?: string[];
+}
+
+// -------------------------------- Collector ---------------------------------
+
+export interface Collector {
+  id: string;
+  name: string;
+  businessId?: string; // usually attached to a business's staff
+  phone?: string;
+  active: boolean;
+  createdAt: string;
+}
+
+// ----------------------------------- Rig -------------------------------------
+
+export type RigCondition = "healthy" | "warning" | "critical" | "offline";
+
+export interface Rig {
+  id: string;
+  code: string; // e.g. "R-04"
+  model: string;
+  active: boolean;
+  batteryPct: number; // last known
+  storagePct: number; // used %
+  condition: RigCondition;
+  lastServiceAt?: string;
+  createdAt: string;
+  notes?: string;
+}
+
+// -------------------------------- Assignment ----------------------------------
+
+export type AssignmentStatus =
+  | "planned"
+  | "confirmed"
+  | "in_progress"
+  | "completed"
+  | "rejected"
+  | "cancelled"
+  | "no_show";
+
+export interface Assignment {
+  id: string;
+  date: string; // ISO date "yyyy-MM-dd"
+  businessId: string;
+  foId: string;
+  collectorId?: string;
+  rigId?: string;
+  plannedStart: string; // ISO datetime
+  plannedEnd: string; // ISO datetime
+  actualArrivalAt?: string;
+  actualStart?: string;
+  actualEnd?: string;
+  priority: "high" | "normal" | "low";
+  status: AssignmentStatus;
+  sessionId?: string;
+  planId?: string;
+  notes?: string;
+  travelBufferMin?: number;
+  createdAt: string;
+}
+
+// ---------------------------------- Session -----------------------------------
+
+export type SessionStatus = "active" | "completed" | "failed" | "cancelled";
+
+export interface SessionTelemetryPoint {
+  at: string;
+  batteryPct: number;
+  storagePct: number;
+  signal: "healthy" | "intermittent" | "offline";
+}
+
+export interface Session {
+  id: string;
+  assignmentId: string;
+  businessId: string;
+  foId: string;
+  collectorId?: string;
+  rigId?: string;
+  date: string;
+  startedAt: string;
+  endedAt?: string;
+  plannedDurationMin: number;
+  status: SessionStatus;
+  batteryPct: number;
+  storagePct: number;
+  signal: "healthy" | "intermittent" | "offline";
+  telemetry?: SessionTelemetryPoint[];
+  checklistSetup?: {
+    confirmedBusiness: boolean;
+    scannedRig: boolean;
+    checkedBattery: boolean;
+    checkedStorage: boolean;
+    confirmedCollector: boolean;
+    capturedEvidence: boolean;
+  };
+  notes?: string;
+  createdAt: string;
+}
+
+// ---------------------------------- Evidence -----------------------------------
+
+export interface EvidenceFile {
+  id: string;
+  name: string;
+  type: string; // mime
+  sizeBytes: number;
+  localUrl: string; // object URL (session only, not persisted binary)
+  capturedAt: string;
+}
+
+export interface Evidence {
+  id: string;
+  sessionId: string;
+  businessId: string;
+  foId: string;
+  collectorId?: string;
+  rigId?: string;
+  startedAt: string;
+  endedAt?: string;
+  lat?: number;
+  lng?: number;
+  files: EvidenceFile[];
+  notes?: string;
+  status: "pending" | "submitted" | "verified";
+  createdAt: string;
+}
+
+// ----------------------------------- Issue --------------------------------------
+
+export type IssueType =
+  | "business_rejection"
+  | "fo_no_show"
+  | "late_arrival"
+  | "rig_failure"
+  | "battery"
+  | "storage"
+  | "network"
+  | "recording_failure"
+  | "quality"
+  | "damage"
+  | "missing_evidence"
+  | "scheduling"
+  | "other";
+
+export type IssueStatus = "open" | "in_progress" | "resolved" | "cancelled";
+
+export interface Issue {
+  id: string;
+  type: IssueType;
+  severity: Severity;
+  title: string;
+  description: string;
+  businessId?: string;
+  foId?: string;
+  rigId?: string;
+  sessionId?: string;
+  assignmentId?: string;
+  owner?: string; // who owns resolving it (usually "You" / FO name)
+  rootCause?: string;
+  action?: string;
+  status: IssueStatus;
+  lostHours?: number;
+  createdAt: string;
+  resolvedAt?: string;
+  resolution?: string;
+}
+
+// ------------------------------- Quality Review ----------------------------------
+
+export type QualityVerdict = "pending" | "pass" | "warn" | "fail";
+
+export interface QualityFlag {
+  code: string;
+  label: string;
+  detail: string;
+}
+
+export interface QualityReview {
+  id: string;
+  sessionId: string;
+  businessId: string;
+  foId: string;
+  verdict: QualityVerdict;
+  flags: QualityFlag[];
+  reviewedAt?: string;
+  correctiveActionId?: string;
+  notes?: string;
+  createdAt: string;
+}
+
+export type CorrectiveActionType =
+  | "recapture"
+  | "fo_followup"
+  | "business_followup"
+  | "rig_inspection"
+  | "collector_retraining";
+
+export interface CorrectiveAction {
+  id: string;
+  qualityReviewId: string;
+  type: CorrectiveActionType;
+  notes?: string;
+  status: "open" | "done";
+  createdAt: string;
+  doneAt?: string;
+}
+
+// ------------------------------- Activity Event -----------------------------------
+
+export type ActivityEventType =
+  | "assignment_created"
+  | "fo_arrived"
+  | "rig_scanned"
+  | "session_started"
+  | "battery_warning"
+  | "storage_warning"
+  | "signal_warning"
+  | "session_ended"
+  | "evidence_added"
+  | "qa_passed"
+  | "qa_warned"
+  | "qa_failed"
+  | "issue_reported"
+  | "issue_resolved"
+  | "business_rejected"
+  | "plan_published"
+  | "plan_changed"
+  | "day_started"
+  | "day_ended"
+  | "note";
+
+export interface ActivityEvent {
+  id: string;
+  type: ActivityEventType;
+  at: string;
+  entityKind: EntityKind;
+  entityId: string;
+  businessId?: string;
+  foId?: string;
+  rigId?: string;
+  sessionId?: string;
+  issueId?: string;
+  summary: string;
+  detail?: string;
+}
+
+// ---------------------------------- Daily Plan -------------------------------------
+
+export interface PlanConflict {
+  id: string;
+  type: "fo_double_booking" | "rig_double_booking" | "fo_unavailable" | "rig_unavailable" | "business_unavailable" | "insufficient_capacity" | "unrealistic_timing";
+  severity: Severity;
+  message: string;
+  assignmentIds: string[];
+}
+
+export interface DailyPlan {
+  id: string;
+  date: string;
+  assignmentIds: string[];
+  score: number;
+  scoreBreakdown: { label: string; delta: number }[];
+  conflicts: PlanConflict[];
+  publishedAt?: string;
+  createdAt: string;
+}
+
+// --------------------------------- Daily Report --------------------------------------
+
+export type ReportKind = "sod" | "mod" | "eod";
+
+export interface DailyReport {
+  id: string;
+  date: string;
+  kind: ReportKind;
+  generatedAt: string;
+  data: Record<string, unknown>;
+  narrative?: string;
+}
+
+// ------------------------------------ Settings -------------------------------------------
+
+export interface CitySettings {
+  cityName: string;
+  workingHoursStart: string; // "HH:mm"
+  workingHoursEnd: string;
+  defaultSessionDurationMin: number;
+  recordingHoursTargetPerDay: number;
+  theme: "light" | "dark" | "system";
+  onboarded: boolean;
+}
+
+// ----------------------------------- Root store shape -------------------------------------
+
+export interface CityData {
+  version: number;
+  settings: CitySettings;
+  businesses: Business[];
+  fos: FieldOfficer[];
+  collectors: Collector[];
+  rigs: Rig[];
+  assignments: Assignment[];
+  sessions: Session[];
+  evidence: Evidence[];
+  issues: Issue[];
+  qualityReviews: QualityReview[];
+  correctiveActions: CorrectiveAction[];
+  activity: ActivityEvent[];
+  plans: DailyPlan[];
+  reports: DailyReport[];
+}
