@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Radio, Battery, HardDrive, Wifi, Search } from "lucide-react";
 import { PageHeader } from "@/components/shared/PageHeader";
@@ -13,7 +13,7 @@ import { fmtDateTime, fmtDuration } from "@/lib/dates";
 
 function useTick(intervalMs: number) {
   const [, setTick] = useState(0);
-  useMemo(() => {
+  useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), intervalMs);
     return () => clearInterval(t);
   }, [intervalMs]);

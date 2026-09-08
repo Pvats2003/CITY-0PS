@@ -8,6 +8,9 @@ import {
   FileSpreadsheet,
   AlertTriangle,
   CheckCircle2,
+  PlusCircle,
+  Pencil,
+  Cpu,
 } from "lucide-react";
 import { PageHeader } from "@/components/shared/PageHeader";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -29,7 +32,9 @@ import { generateDemoData } from "@/lib/demo/generate";
 import { validateBackup, mergeCityData } from "@/lib/backup";
 import { downloadCSV, downloadJSON } from "@/lib/csv";
 import { fmtDate } from "@/lib/dates";
-import type { CityData } from "@/types";
+import type { CityData, Rig } from "@/types";
+import { RigFormDialog } from "@/components/forms/RigFormDialog";
+import { StatusBadge } from "@/components/status";
 
 export default function Settings() {
   const data = useCity();
@@ -46,6 +51,8 @@ export default function Settings() {
   const [clearOpen, setClearOpen] = useState(false);
   const [clearConfirmText, setClearConfirmText] = useState("");
   const [toast, setToast] = useState<string | null>(null);
+  const [rigDialogOpen, setRigDialogOpen] = useState(false);
+  const [rigTarget, setRigTarget] = useState<Rig | undefined>();
 
   function setTab(t: string) {
     setParams((p) => {
@@ -158,6 +165,7 @@ export default function Settings() {
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList>
             <TabsTrigger value="general">General</TabsTrigger>
+            <TabsTrigger value="fleet">Fleet</TabsTrigger>
             <TabsTrigger value="data">Import / Export</TabsTrigger>
           </TabsList>
         </Tabs>
@@ -216,6 +224,38 @@ export default function Settings() {
                   </SelectContent>
                 </Select>
               </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {tab === "fleet" && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Rig fleet</CardTitle>
+              <Button size="sm" variant="secondary" onClick={() => { setRigTarget(undefined); setRigDialogOpen(true); }}>
+                <PlusCircle className="size-4" /> Add Rig
+              </Button>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {data.rigs.length === 0 ? (
+                <div className="text-sm text-muted py-4 text-center">No rigs registered yet. Add your recording devices so they can be assigned to visits.</div>
+              ) : (
+                <div className="divide-y divide-border">
+                  {data.rigs.map((r) => (
+                    <div key={r.id} className="flex items-center gap-3 py-2.5">
+                      <Cpu className="size-4 text-muted shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium">{r.code}</div>
+                        <div className="text-xs text-muted truncate">{r.model}</div>
+                      </div>
+                      <StatusBadge status={!r.active ? "offline" : r.condition} />
+                      <Button size="icon-sm" variant="ghost" onClick={() => { setRigTarget(r); setRigDialogOpen(true); }}>
+                        <Pencil className="size-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
@@ -361,6 +401,8 @@ export default function Settings() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <RigFormDialog open={rigDialogOpen} onOpenChange={setRigDialogOpen} rig={rigTarget} />
 
       {toast && (
         <div className="fixed bottom-4 right-4 flex items-center gap-2 rounded-md border border-success/25 bg-success-bg text-success px-4 py-2.5 text-sm shadow-lg z-50">

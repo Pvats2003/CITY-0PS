@@ -97,8 +97,8 @@ export default function CommandCenter() {
             size="lg"
             label="Recording Hours / Target"
             value={`${fmtHours(recordedHours)} / ${fmtHours(target, 0)}`}
-            sub={`${achievementPct}% achieved today`}
-            tone={achievementPct >= 90 ? "success" : achievementPct >= 70 ? "warning" : "critical"}
+            sub={assignments.length === 0 ? "nothing planned yet" : `${achievementPct}% achieved today`}
+            tone={assignments.length === 0 ? "default" : achievementPct >= 90 ? "success" : achievementPct >= 70 ? "warning" : "critical"}
             icon={Clock}
           />
           <KpiCard label="Businesses" value={`${completed}/${assignments.length}`} sub="completed / planned" icon={Store} />

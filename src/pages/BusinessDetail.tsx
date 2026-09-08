@@ -11,11 +11,14 @@ import {
   ExternalLink,
   Lightbulb,
   Radio,
+  UserPlus,
+  Users,
 } from "lucide-react";
 import { useCity } from "@/store/city";
 import { computeBusinessStats, businessInsightText } from "@/engine/insights";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/status";
 import { ActivityTimeline } from "@/components/shared/ActivityTimeline";
 import { BusinessFormDialog } from "@/components/forms/BusinessFormDialog";
@@ -25,14 +28,23 @@ import { fmtDate, fmtDateTime, fmtHours } from "@/lib/dates";
 export default function BusinessDetail() {
   const { id } = useParams();
   const data = useCity();
+  const addCollector = useCity((s) => s.addCollector);
   const [editOpen, setEditOpen] = useState(false);
   const [issueOpen, setIssueOpen] = useState(false);
+  const [newCollector, setNewCollector] = useState("");
   const business = data.businesses.find((b) => b.id === id);
 
   const stats = useMemo(() => (business ? computeBusinessStats(data, business) : null), [data, business]);
   const events = useMemo(() => data.activity.filter((e) => e.businessId === id).sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()), [data.activity, id]);
   const sessions = useMemo(() => data.sessions.filter((s) => s.businessId === id).sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()), [data.sessions, id]);
   const openIssues = useMemo(() => data.issues.filter((i) => i.businessId === id && i.status !== "resolved" && i.status !== "cancelled"), [data.issues, id]);
+  const collectors = useMemo(() => data.collectors.filter((c) => c.businessId === id), [data.collectors, id]);
+
+  function submitCollector() {
+    if (!newCollector.trim() || !business) return;
+    addCollector({ name: newCollector.trim(), businessId: business.id, active: true });
+    setNewCollector("");
+  }
 
   if (!business) return <Navigate to="/businesses" replace />;
   const insight = businessInsightText(stats!);
@@ -167,6 +179,39 @@ export default function BusinessDetail() {
                 </div>
               )}
               {business.notes && <div className="text-xs text-muted pt-2 border-t border-border whitespace-pre-wrap">{business.notes}</div>}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Collectors</CardTitle>
+              <Users className="size-4 text-muted" />
+            </CardHeader>
+            <CardContent className="pt-0 space-y-2.5">
+              {collectors.length === 0 ? (
+                <div className="text-xs text-muted">No collectors added yet.</div>
+              ) : (
+                <ul className="space-y-1.5">
+                  {collectors.map((c) => (
+                    <li key={c.id} className="flex items-center justify-between text-sm">
+                      <span>{c.name}</span>
+                      <StatusBadge status={c.active ? "healthy" : "offline"} />
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="flex gap-1.5 pt-1">
+                <Input
+                  value={newCollector}
+                  onChange={(e) => setNewCollector(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && submitCollector()}
+                  placeholder="Collector name"
+                  className="h-8 text-xs"
+                />
+                <Button size="icon-sm" variant="secondary" onClick={submitCollector} disabled={!newCollector.trim()}>
+                  <UserPlus className="size-3.5" />
+                </Button>
+              </div>
             </CardContent>
           </Card>
 

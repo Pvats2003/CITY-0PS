@@ -1,3 +1,4 @@
+import { Suspense, lazy } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useCity } from "@/store/city";
@@ -17,9 +18,12 @@ import Issues from "@/pages/Issues";
 import IssueDetail from "@/pages/IssueDetail";
 import Quality from "@/pages/Quality";
 import Reports from "@/pages/Reports";
-import Analytics from "@/pages/Analytics";
 import SearchPage from "@/pages/SearchPage";
 import Settings from "@/pages/Settings";
+
+// Recharts is the single largest dependency and only used here, so it's
+// worth splitting out of the main bundle.
+const Analytics = lazy(() => import("@/pages/Analytics"));
 
 function App() {
   const onboarded = useCity((s) => s.settings.onboarded);
@@ -50,7 +54,14 @@ function App() {
             <Route path="/issues/:id" element={<IssueDetail />} />
             <Route path="/quality" element={<Quality />} />
             <Route path="/reports" element={<Reports />} />
-            <Route path="/analytics" element={<Analytics />} />
+            <Route
+              path="/analytics"
+              element={
+                <Suspense fallback={null}>
+                  <Analytics />
+                </Suspense>
+              }
+            />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/settings" element={<Settings />} />
           </Route>

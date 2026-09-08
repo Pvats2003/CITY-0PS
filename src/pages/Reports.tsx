@@ -124,7 +124,7 @@ export default function Reports() {
           title="Reports"
           subtitle="Start of Day, Mid Day, End of Day, and tomorrow's recommendations — generated from live data."
           actions={
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-40" />
               <Button variant="secondary" size="sm" onClick={copyReport}>
                 <Copy className="size-4" /> Copy Report
