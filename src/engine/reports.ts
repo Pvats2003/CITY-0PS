@@ -179,7 +179,7 @@ function buildEODNarrative(
   sentences.push(`Today the city achieved ${ctx.achievementPct}% of planned recording hours (${ctx.recordingHours.toFixed(1)}h of ${targetHours}h target).`);
 
   if (ctx.lostHours.topCause) {
-    sentences.push(`Primary loss: ${ctx.lostHours.topCause.label.toLowerCase()} (−${ctx.lostHours.topCause.hours.toFixed(1)}h).`);
+    sentences.push(`Primary loss: ${ctx.lostHours.topCause.label} (−${ctx.lostHours.topCause.hours.toFixed(1)}h).`);
   }
 
   const bizMap = new Map(data.businesses.map((b) => [b.id, b]));
