@@ -1,16 +1,20 @@
 import { useState } from "react";
-import { Sparkles, Building2, ArrowRight, Import } from "lucide-react";
+import { Sparkles, Building2, ArrowRight, Import, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useCity } from "@/store/city";
 import { generateDemoData } from "@/lib/demo/generate";
+import { isFirebaseConfigured } from "@/auth/config";
 
 export default function Onboarding() {
   const loadData = useCity((s) => s.loadData);
   const updateSettings = useCity((s) => s.updateSettings);
   const [mode, setMode] = useState<"choice" | "manual">("choice");
   const [cityName, setCityName] = useState("My City");
+  // Demo data must never reach a shared production backend — a real
+  // Firebase project only ever gets what a manager explicitly adds.
+  const isProduction = isFirebaseConfigured();
 
   function loadDemo() {
     const data = generateDemoData();
@@ -34,23 +38,34 @@ export default function Onboarding() {
             <div className="text-center">
               <h1 className="text-lg font-semibold">Welcome to City Ops OS</h1>
               <p className="text-sm text-muted mt-1">
-                A local-first command center for running field operations. Everything stays on this device — zero cost, zero cloud.
+                {isProduction
+                  ? "Connected to your shared city database. Start your city clean — no demo data reaches production."
+                  : "A local-first command center for running field operations. Everything stays on this device — zero cost, zero cloud."}
               </p>
             </div>
 
+            {isProduction && (
+              <div className="flex items-start gap-2 rounded-md border border-info/20 bg-info-bg px-3 py-2.5 text-xs text-info">
+                <ShieldCheck className="size-4 shrink-0 mt-0.5" />
+                Production mode is active. Demo data is disabled here — add your real businesses, field officers, and rigs after starting your city.
+              </div>
+            )}
+
             <div className="grid gap-3 pt-2">
-              <button
-                onClick={loadDemo}
-                className="flex items-start gap-3 rounded-lg border border-primary/30 bg-primary/5 p-4 text-left hover:border-primary/50 transition-colors"
-              >
-                <Sparkles className="size-5 text-primary shrink-0 mt-0.5" />
-                <div>
-                  <div className="text-sm font-medium">Load Demo City</div>
-                  <div className="text-xs text-muted mt-0.5">
-                    Explore a fully populated city — 18 businesses, 5 FOs, 8 rigs, and a week of realistic operational history.
+              {!isProduction && (
+                <button
+                  onClick={loadDemo}
+                  className="flex items-start gap-3 rounded-lg border border-primary/30 bg-primary/5 p-4 text-left hover:border-primary/50 transition-colors"
+                >
+                  <Sparkles className="size-5 text-primary shrink-0 mt-0.5" />
+                  <div>
+                    <div className="text-sm font-medium">Load Demo City</div>
+                    <div className="text-xs text-muted mt-0.5">
+                      Explore a fully populated city — 18 businesses, 5 FOs, 8 rigs, and a week of realistic operational history.
+                    </div>
                   </div>
-                </div>
-              </button>
+                </button>
+              )}
 
               <button
                 onClick={() => setMode("manual")}

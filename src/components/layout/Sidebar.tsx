@@ -6,12 +6,23 @@ import { useCity } from "@/store/city";
 import { useUI } from "@/store/ui";
 import { activeSessions, issuesOpen } from "@/engine/selectors";
 import { buildFleetRanking, isDeployable } from "@/engine/rigGuardian";
+import { useSyncStatus } from "@/data/useSyncStatus";
+import { isFirebaseConfigured } from "@/auth/config";
 import { Badge } from "@/components/ui/badge";
+
+const STATUS_DOT_CLASS: Record<string, string> = {
+  disabled: "bg-success", // demo/local mode is always "healthy" — nothing to fail
+  online: "bg-success",
+  syncing: "bg-info animate-pulse",
+  offline: "bg-warning",
+  error: "bg-critical",
+};
 
 export function Sidebar() {
   const data = useCity();
   const setPaletteOpen = useUI((s) => s.setPaletteOpen);
   const setSystemStatusOpen = useUI((s) => s.setSystemStatusOpen);
+  const { status } = useSyncStatus();
 
   const openCritical = issuesOpen(data).filter((i) => i.severity === "critical").length;
   const liveSessions = activeSessions(data).length;
@@ -75,13 +86,15 @@ export function Sidebar() {
           <Upload className="size-4" />
           Import / Export
         </NavLink>
-        <NavLink
-          to="/settings?tab=data"
-          className="flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground transition-colors"
-        >
-          <Sparkles className="size-4" />
-          Demo Data
-        </NavLink>
+        {!isFirebaseConfigured() && (
+          <NavLink
+            to="/settings?tab=data"
+            className="flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground transition-colors"
+          >
+            <Sparkles className="size-4" />
+            Demo Data
+          </NavLink>
+        )}
         <NavLink
           to="/settings"
           className="flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground transition-colors"
@@ -95,7 +108,7 @@ export function Sidebar() {
         >
           <Activity className="size-4" />
           <span className="flex-1 text-left">System Status</span>
-          <span className="size-1.5 rounded-full bg-success" />
+          <span className={cn("size-1.5 rounded-full", STATUS_DOT_CLASS[status])} title={status} />
         </button>
       </div>
     </aside>

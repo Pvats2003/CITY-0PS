@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/dialog";
 import { useCity } from "@/store/city";
 import { generateDemoData } from "@/lib/demo/generate";
+import { isFirebaseConfigured } from "@/auth/config";
 import { validateBackup, mergeCityData } from "@/lib/backup";
 import { downloadCSV, downloadJSON } from "@/lib/csv";
 import { fmtDate } from "@/lib/dates";
@@ -296,17 +297,19 @@ export default function Settings() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>Demo data</CardTitle>
-              </CardHeader>
-              <CardContent className="pt-0 space-y-3">
-                <p className="text-sm text-muted">Regenerate a fresh, realistic demo city — useful for exploring the product without real data.</p>
-                <Button variant="secondary" onClick={() => setResetOpen(true)}>
-                  <Sparkles className="size-4" /> Reset Demo Data
-                </Button>
-              </CardContent>
-            </Card>
+            {!isFirebaseConfigured() && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Demo data</CardTitle>
+                </CardHeader>
+                <CardContent className="pt-0 space-y-3">
+                  <p className="text-sm text-muted">Regenerate a fresh, realistic demo city — useful for exploring the product without real data.</p>
+                  <Button variant="secondary" onClick={() => setResetOpen(true)}>
+                    <Sparkles className="size-4" /> Reset Demo Data
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
 
             <Card className="border-critical/25">
               <CardHeader>

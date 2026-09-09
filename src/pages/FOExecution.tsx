@@ -137,13 +137,21 @@ export default function FOExecution() {
  * there's no shared backend to report on, so nothing is shown rather than
  * a misleading "online" indicator. */
 function SyncStatusBanner() {
-  const { status, pendingCount } = useSyncStatus();
+  const { status, pendingCount, errorMessage } = useSyncStatus();
   if (status === "disabled" || status === "online") return null;
   if (status === "offline") {
     return (
       <div className="flex items-center gap-2 px-3 py-2 bg-warning-bg border-b border-warning/20 text-xs text-warning">
         <WifiOff className="size-3.5 shrink-0" />
         Offline — changes saved on this device. Will sync automatically when connection returns.
+      </div>
+    );
+  }
+  if (status === "error") {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2 bg-critical-bg border-b border-critical/20 text-xs text-critical">
+        <ShieldAlert className="size-3.5 shrink-0" />
+        Sync error — {errorMessage ?? "a change could not be saved."} {pendingCount} change{pendingCount === 1 ? "" : "s"} still waiting.
       </div>
     );
   }

@@ -37,10 +37,31 @@ export async function outboxDepth(): Promise<number> {
   return allKeys.filter((k) => typeof k === "string" && k.startsWith("outbox:")).length;
 }
 
+let lastSyncError: string | null = null;
+
+/** Real error only — never fabricated. Cleared the moment a write actually
+ * succeeds. Distinct from "offline": this is set when a write was rejected
+ * while genuinely online (rules denial, backend unavailable, etc.) — the
+ * one case where the UI must say SYNC ERROR rather than pretend success or
+ * silently retry forever (spec: never claim an operation succeeded when it
+ * didn't). */
+export function getSyncError(): string | null {
+  return lastSyncError;
+}
+
+function describeError(err: unknown): string {
+  const code = (err as { code?: string } | undefined)?.code;
+  if (code === "permission-denied") return "Permission denied — you may not have access to update this record.";
+  if (code === "unavailable") return "The server is temporarily unavailable.";
+  return err instanceof Error ? err.message : "Sync failed.";
+}
+
 /** Pushes every queued entry to the backend, in the order they were first
- * queued. Stops at the first failure (network drop mid-drain, a rule
- * rejection, etc.) rather than reordering or skipping — the next `online`
- * event or manual retry picks up where it left off. Never drops a write. */
+ * queued. Stops at the first failure rather than reordering or skipping —
+ * the next `online` event or manual retry picks up where it left off.
+ * Never drops a write. A failure while still online is a real SYNC ERROR;
+ * a failure caused by losing connectivity mid-drain is not — that's just
+ * "offline," and is cleared silently on the next successful drain. */
 export async function drainOutbox(backend: RemoteBackend): Promise<void> {
   if (!navigator.onLine) return;
   const allKeys = (await keys()).filter((k): k is string => typeof k === "string" && k.startsWith("outbox:"));
@@ -51,8 +72,14 @@ export async function drainOutbox(backend: RemoteBackend): Promise<void> {
       if (entry.data === null) await backend.deleteDoc(entry.collection, entry.id);
       else await backend.putDoc(entry.collection, entry.id, entry.data);
       await del(key);
+      if (lastSyncError) {
+        lastSyncError = null;
+      }
       notifyChange();
-    } catch {
+    } catch (err) {
+      if (!navigator.onLine) break; // lost connectivity mid-drain — not an error
+      lastSyncError = describeError(err);
+      notifyChange();
       break;
     }
   }
