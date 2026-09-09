@@ -5,9 +5,7 @@ import {
   MapPin,
   Navigation2,
   CalendarClock,
-  Map as MapIcon,
-  ScanLine,
-  Bell,
+  Radio,
   UserRound,
   CheckCircle2,
   Circle,
@@ -18,9 +16,12 @@ import {
   PlayCircle,
   StopCircle,
   ShieldAlert,
+  LogOut,
+  WifiOff,
+  RefreshCw,
 } from "lucide-react";
 import { useCity } from "@/store/city";
-import { todayISO, fmtTime } from "@/lib/dates";
+import { todayISO, fmtTime, fmtDate, fmtHours } from "@/lib/dates";
 import { checkInAssignment, startSessionForAssignment, logRigPreflightPassed } from "@/engine/workflows";
 import { buildRigSummary, isDeployable } from "@/engine/rigGuardian";
 import { Button } from "@/components/ui/button";
@@ -31,12 +32,19 @@ import { cn } from "@/lib/utils";
 import { IssueFormDialog } from "@/components/forms/IssueFormDialog";
 import { RigIncidentFormDialog } from "@/components/forms/RigIncidentFormDialog";
 import { PostSessionCheckDialog } from "@/components/forms/PostSessionCheckDialog";
+import { useAuth } from "@/auth/AuthContext";
+import { useSyncStatus } from "@/data/useSyncStatus";
 import type { Assignment } from "@/types";
 
-type BottomTab = "today" | "map" | "scan" | "alerts" | "profile";
+type BottomTab = "today" | "sessions" | "issues" | "profile";
 
 export default function FOExecution() {
-  const { id } = useParams();
+  // /field-officers/:id/execute (manager preview) supplies id via the URL;
+  // /fo (the FO's own login) has no id param — it's resolved from their
+  // authenticated identity instead.
+  const params = useParams();
+  const { user, logout } = useAuth();
+  const id = params.id ?? user?.foId;
   const data = useCity();
   const fo = data.fos.find((f) => f.id === id);
   const date = todayISO();
@@ -55,7 +63,21 @@ export default function FOExecution() {
     [data.assignments, id, date],
   );
 
-  if (!fo) return <Navigate to="/field-officers" replace />;
+  if (!fo) {
+    // Manager preview of a specific FO that no longer exists.
+    if (params.id) return <Navigate to="/field-officers" replace />;
+    // Logged-in FO whose record isn't in the currently loaded city data.
+    return (
+      <div className="min-h-dvh flex flex-col items-center justify-center gap-3 bg-background text-foreground max-w-md mx-auto border-x border-border p-6 text-center">
+        <UserRound className="size-10 text-muted" />
+        <div className="text-base font-semibold">No field officer profile found</div>
+        <p className="text-sm text-muted">Your account isn't linked to an active field officer in this city yet. Ask your manager to check your assignment.</p>
+        <Button variant="secondary" onClick={() => logout()}>
+          <LogOut className="size-4" /> Sign out
+        </Button>
+      </div>
+    );
+  }
 
   const selectedAssignment = today.find((a) => a.id === selected);
 
@@ -75,10 +97,18 @@ export default function FOExecution() {
           <div className="text-sm font-semibold truncate">{selectedAssignment ? bizMap.get(selectedAssignment.businessId)?.name : fo.name}</div>
           <div className="text-[11px] text-muted">{selectedAssignment ? "Visit" : "Field Officer Cockpit"}</div>
         </div>
-        <Link to={`/field-officers/${fo.id}`} className="text-xs text-primary shrink-0">
-          Desktop
-        </Link>
+        {params.id ? (
+          <Link to={`/field-officers/${fo.id}`} className="text-xs text-primary shrink-0">
+            Desktop
+          </Link>
+        ) : (
+          <button onClick={() => logout()} className="p-2 -mr-2 rounded-md hover:bg-surface-2 text-muted shrink-0" title="Sign out">
+            <LogOut className="size-4" />
+          </button>
+        )}
       </header>
+
+      <SyncStatusBanner />
 
       <main className="flex-1 overflow-y-auto pb-2">
         {tab === "today" && (
@@ -88,19 +118,39 @@ export default function FOExecution() {
             <TodayList assignments={today} onSelect={setSelected} />
           )
         )}
-        {tab === "map" && <MapTab assignments={today} />}
-        {tab === "scan" && <ScanTab />}
-        {tab === "alerts" && <AlertsTab foId={fo.id} />}
-        {tab === "profile" && <ProfileTab foId={fo.id} />}
+        {tab === "sessions" && <SessionsTab foId={fo.id} />}
+        {tab === "issues" && <IssuesTab foId={fo.id} />}
+        {tab === "profile" && <ProfileTab foId={fo.id} isPreview={!!params.id} />}
       </main>
 
-      <nav className="grid grid-cols-5 border-t border-border shrink-0 bg-surface">
+      <nav className="grid grid-cols-4 border-t border-border shrink-0 bg-surface">
         <BottomNavItem icon={CalendarClock} label="Today" active={tab === "today"} onClick={() => { setTab("today"); }} />
-        <BottomNavItem icon={MapIcon} label="Map" active={tab === "map"} onClick={() => setTab("map")} />
-        <BottomNavItem icon={ScanLine} label="Scan" active={tab === "scan"} onClick={() => setTab("scan")} />
-        <BottomNavItem icon={Bell} label="Alerts" active={tab === "alerts"} onClick={() => setTab("alerts")} />
+        <BottomNavItem icon={Radio} label="Sessions" active={tab === "sessions"} onClick={() => setTab("sessions")} />
+        <BottomNavItem icon={AlertTriangle} label="Issues" active={tab === "issues"} onClick={() => setTab("issues")} />
         <BottomNavItem icon={UserRound} label="Profile" active={tab === "profile"} onClick={() => setTab("profile")} />
       </nav>
+    </div>
+  );
+}
+
+/** Real status only (spec: never fake real-time). Silent in demo mode —
+ * there's no shared backend to report on, so nothing is shown rather than
+ * a misleading "online" indicator. */
+function SyncStatusBanner() {
+  const { status, pendingCount } = useSyncStatus();
+  if (status === "disabled" || status === "online") return null;
+  if (status === "offline") {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2 bg-warning-bg border-b border-warning/20 text-xs text-warning">
+        <WifiOff className="size-3.5 shrink-0" />
+        Offline — changes saved on this device. Will sync automatically when connection returns.
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 bg-info-bg border-b border-info/20 text-xs text-info">
+      <RefreshCw className="size-3.5 shrink-0 animate-spin" />
+      Sync pending — {pendingCount} change{pendingCount === 1 ? "" : "s"} waiting to upload.
     </div>
   );
 }
@@ -145,20 +195,33 @@ function TodayList({ assignments, onSelect }: { assignments: Assignment[]; onSel
         const done = a.status === "completed";
         const active = a.status === "in_progress";
         return (
-          <button
-            key={a.id}
-            onClick={() => onSelect(a.id)}
-            className="w-full text-left rounded-lg border border-border bg-surface p-3.5 active:scale-[0.99] transition-transform"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted tabular-nums">{fmtTime(a.plannedStart)}</span>
-              <StatusBadge status={done ? "completed" : active ? "active" : "pending"} />
-            </div>
-            <div className="text-base font-semibold mt-1">{biz?.name}</div>
-            <div className="text-xs text-muted flex items-center gap-1 mt-0.5">
-              <MapPin className="size-3.5" /> {biz?.area}
-            </div>
-          </button>
+          <div key={a.id} className="flex items-stretch gap-2">
+            <button
+              onClick={() => onSelect(a.id)}
+              className="flex-1 text-left rounded-lg border border-border bg-surface p-3.5 active:scale-[0.99] transition-transform min-w-0"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-muted tabular-nums">{fmtTime(a.plannedStart)}</span>
+                <StatusBadge status={done ? "completed" : active ? "active" : "pending"} />
+              </div>
+              <div className="text-base font-semibold mt-1 truncate">{biz?.name}</div>
+              <div className="text-xs text-muted flex items-center gap-1 mt-0.5">
+                <MapPin className="size-3.5" /> {biz?.area}
+              </div>
+            </button>
+            {biz?.lat && biz?.lng && (
+              <a
+                href={`https://www.google.com/maps/search/?api=1&query=${biz.lat},${biz.lng}`}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="flex items-center justify-center rounded-lg border border-border bg-surface px-3 text-primary shrink-0"
+                title="Navigate"
+              >
+                <Navigation2 className="size-4" />
+              </a>
+            )}
+          </div>
         );
       })}
     </div>
@@ -393,30 +456,36 @@ function CompletionRow({ label, done }: { label: string; done: boolean }) {
   );
 }
 
-function MapTab({ assignments }: { assignments: Assignment[] }) {
+function SessionsTab({ foId }: { foId: string }) {
   const data = useCity();
   const bizMap = new Map(data.businesses.map((b) => [b.id, b]));
+  const sessions = useMemo(
+    () => data.sessions.filter((s) => s.foId === foId).sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()),
+    [data.sessions, foId],
+  );
+  if (sessions.length === 0) return <div className="p-8 text-center text-sm text-muted">No sessions recorded yet.</div>;
   return (
     <div className="p-3 space-y-2">
-      <div className="text-xs text-muted px-1 pb-1">No map API required — open any stop directly in your maps app.</div>
-      {assignments.map((a) => {
-        const biz = bizMap.get(a.businessId);
+      {sessions.map((s) => {
+        const biz = bizMap.get(s.businessId);
+        const hours = s.endedAt ? (new Date(s.endedAt).getTime() - new Date(s.startedAt).getTime()) / 3_600_000 : null;
         return (
-          <div key={a.id} className="flex items-center justify-between rounded-lg border border-border p-3">
-            <div>
-              <div className="text-sm font-medium">{biz?.name}</div>
-              <div className="text-xs text-muted">{biz?.address}</div>
+          <div key={s.id} className="rounded-lg border border-border bg-surface p-3.5">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold">{biz?.name ?? "Unknown business"}</span>
+              <StatusBadge status={s.status === "active" ? "active" : s.status === "completed" ? "completed" : "pending"} />
             </div>
-            {biz?.lat && biz?.lng && (
-              <a
-                href={`https://www.google.com/maps/search/?api=1&query=${biz.lat},${biz.lng}`}
-                target="_blank"
-                rel="noreferrer"
-                className="text-primary shrink-0"
-              >
-                <Navigation2 className="size-5" />
-              </a>
-            )}
+            <div className="text-xs text-muted mt-1 flex items-center gap-2">
+              <span>{fmtDate(s.date)}</span>
+              <span>·</span>
+              <span>{fmtTime(s.startedAt)}</span>
+              {hours !== null && (
+                <>
+                  <span>·</span>
+                  <span>{fmtHours(hours)} recorded</span>
+                </>
+              )}
+            </div>
           </div>
         );
       })}
@@ -424,39 +493,66 @@ function MapTab({ assignments }: { assignments: Assignment[] }) {
   );
 }
 
-function ScanTab() {
-  return (
-    <div className="p-8 text-center space-y-3">
-      <ScanLine className="size-12 text-muted mx-auto" />
-      <div className="text-sm text-muted">Rig scanning happens as part of the Setup checklist for each visit — open a visit from Today to scan in.</div>
-    </div>
-  );
-}
-
-function AlertsTab({ foId }: { foId: string }) {
+function IssuesTab({ foId }: { foId: string }) {
   const data = useCity();
-  const issues = data.issues.filter((i) => i.foId === foId && i.status !== "resolved" && i.status !== "cancelled");
-  if (issues.length === 0) return <div className="p-8 text-center text-sm text-muted">No alerts. You're all clear.</div>;
+  const resolveIssue = useCity((s) => s.resolveIssue);
+  const issues = useMemo(
+    () => data.issues.filter((i) => i.foId === foId).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [data.issues, foId],
+  );
+  const open = issues.filter((i) => i.status !== "resolved" && i.status !== "cancelled");
+  const resolved = issues.filter((i) => i.status === "resolved" || i.status === "cancelled");
+  if (issues.length === 0) return <div className="p-8 text-center text-sm text-muted">No issues reported. You're all clear.</div>;
   return (
-    <div className="p-3 space-y-2">
-      {issues.map((i) => (
-        <div key={i.id} className="rounded-lg border border-border p-3">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">{i.title}</span>
-            <StatusBadge status={i.severity === "critical" ? "critical" : "warning"} />
-          </div>
-          <div className="text-xs text-muted mt-1">{i.description}</div>
+    <div className="p-3 space-y-4">
+      {open.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs font-semibold text-muted px-1">OPEN ({open.length})</div>
+          {open.map((i) => (
+            <div key={i.id} className="rounded-lg border border-border p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">{i.title}</span>
+                <StatusBadge status={i.severity === "critical" ? "critical" : "warning"} />
+              </div>
+              <div className="text-xs text-muted mt-1">{i.description}</div>
+              {/* FOs can resolve their own non-rig issues (e.g. a late-arrival
+                  note) — rig issues always go through the repair lifecycle,
+                  never a one-tap dismiss, to keep Rig Guardian's integrity. */}
+              {!i.rigId && (
+                <button
+                  onClick={() => resolveIssue(i.id, "Resolved by field officer.")}
+                  className="text-xs text-primary mt-2 hover:underline"
+                >
+                  Mark resolved
+                </button>
+              )}
+            </div>
+          ))}
         </div>
-      ))}
+      )}
+      {resolved.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs font-semibold text-muted px-1">RESOLVED ({resolved.length})</div>
+          {resolved.map((i) => (
+            <div key={i.id} className="rounded-lg border border-border p-3 opacity-60">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">{i.title}</span>
+                <StatusBadge status="completed" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function ProfileTab({ foId }: { foId: string }) {
+function ProfileTab({ foId, isPreview }: { foId: string; isPreview: boolean }) {
   const data = useCity();
   const fo = data.fos.find((f) => f.id === foId)!;
+  const { user, isDemoMode, logout } = useAuth();
   return (
-    <div className="p-4 space-y-3">
+    <div className="p-4 space-y-4">
       <div className="flex items-center gap-3">
         <div className="flex size-14 items-center justify-center rounded-full bg-primary/10 text-primary font-semibold text-lg">
           {fo.name.split(" ").map((p) => p[0]).join("").slice(0, 2)}
@@ -467,6 +563,23 @@ function ProfileTab({ foId }: { foId: string }) {
         </div>
       </div>
       <div className="text-xs text-muted">{fo.phone}</div>
+
+      <div className="rounded-lg border border-border p-3 text-xs text-muted space-y-1">
+        <div className="flex items-center justify-between">
+          <span>Signed in as</span>
+          <span className="text-foreground">{user?.email ?? "—"}</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span>Mode</span>
+          <span className="text-foreground">{isDemoMode ? "Demo (this device only)" : "Production"}</span>
+        </div>
+      </div>
+
+      {!isPreview && (
+        <Button variant="secondary" className="w-full" onClick={() => logout()}>
+          <LogOut className="size-4" /> Sign out
+        </Button>
+      )}
     </div>
   );
 }

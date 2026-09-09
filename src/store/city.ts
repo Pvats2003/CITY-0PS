@@ -67,6 +67,9 @@ interface CityActions {
   updateSettings: (patch: Partial<CitySettings>) => void;
   loadData: (data: CityData) => void;
   clearAllData: () => void;
+  /** Sync engine only (src/data/syncEngine.ts) — replaces one collection
+   * wholesale with the backend's current document set. Not for UI use. */
+  mergeRemoteCollection: (collection: keyof CityData, docs: unknown[]) => void;
 
   // activity log
   logActivity: (e: Omit<ActivityEvent, "id" | "at"> & { at?: string }) => void;
@@ -147,6 +150,12 @@ export const useCity = create<CityStore>()(
       clearAllData: () =>
         set((s) => {
           Object.assign(s, emptyCityData());
+        }),
+
+      mergeRemoteCollection: (collection, docs) =>
+        set((s) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (s as any)[collection] = docs;
         }),
 
       logActivity: (e) =>

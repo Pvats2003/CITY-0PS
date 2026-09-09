@@ -64,6 +64,9 @@ export interface FieldOfficer {
   active: boolean;
   createdAt: string;
   unavailableDates?: string[];
+  /** Links this FO record to a login account (see src/auth). Optional —
+   * an FO can exist in the roster before being invited to log in. */
+  email?: string;
 }
 
 // -------------------------------- Collector ---------------------------------

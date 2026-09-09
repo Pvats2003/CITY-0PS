@@ -1,0 +1,77 @@
+rules_version = '2';
+
+// City Ops OS — Firestore security rules.
+//
+// Not applied automatically: deploy with `firebase deploy --only firestore:rules`
+// after creating your Firebase project (see DEPLOYMENT.md). Written and
+// reviewed here, but not exercised against a live project in this session —
+// there is no way to test Firestore rules without a real project.
+//
+// Role/foId live in a `users/{uid}` doc (see src/auth/firebaseAuth.ts),
+// provisioned by you (Firebase console or the Admin SDK), never by the app.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function myUser() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function isManager() {
+      return isSignedIn() && myUser().role == "MANAGER";
+    }
+    function isFieldOfficer() {
+      return isSignedIn() && myUser().role == "FIELD_OFFICER";
+    }
+    function myFoId() {
+      return myUser().foId;
+    }
+
+    // Each user reads only their own account doc. Written by an admin only.
+    match /users/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // Manager: full access to every operational collection.
+    match /{collection}/{docId} {
+      allow read, write: if isManager();
+    }
+
+    // Field Officer: read what they need to do their assigned work; write
+    // only records that are theirs. Rules are additive in Firestore — these
+    // grant access in addition to (never instead of) the manager rule above.
+    match /fos/{docId} {
+      allow read: if isFieldOfficer();
+    }
+    match /businesses/{docId} {
+      allow read: if isFieldOfficer();
+    }
+    match /rigs/{docId} {
+      allow read: if isFieldOfficer();
+    }
+    match /assignments/{docId} {
+      allow read: if isFieldOfficer() && resource.data.foId == myFoId();
+    }
+    match /sessions/{docId} {
+      allow read: if isFieldOfficer() && resource.data.foId == myFoId();
+      allow create, update: if isFieldOfficer() && request.resource.data.foId == myFoId();
+    }
+    match /issues/{docId} {
+      allow read: if isFieldOfficer() && resource.data.foId == myFoId();
+      allow create: if isFieldOfficer() && request.resource.data.foId == myFoId();
+      // Limited resolve: an FO may only update an issue that is already
+      // theirs, and only one with no rigId (rig issues stay on the repair
+      // lifecycle regardless of who reported them — see permission matrix).
+      allow update: if isFieldOfficer() && resource.data.foId == myFoId() && !("rigId" in resource.data);
+    }
+    match /rigIncidents/{docId} {
+      allow read: if isFieldOfficer() && resource.data.foId == myFoId();
+      allow create: if isFieldOfficer() && request.resource.data.foId == myFoId();
+    }
+    match /activity/{docId} {
+      allow read: if isFieldOfficer();
+      allow create: if isFieldOfficer();
+    }
+  }
+}
