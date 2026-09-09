@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { UserMenu } from "./UserMenu";
 
 export function Topbar() {
   const data = useCity();
@@ -59,6 +60,10 @@ export function Topbar() {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      <div className="w-px h-6 bg-border" />
+
+      <UserMenu />
     </header>
   );
 }

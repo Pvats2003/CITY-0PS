@@ -1,13 +1,20 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
-import { Menu, X, Command } from "lucide-react";
+import { Menu, X, Command, LogOut } from "lucide-react";
 import { NAV_ITEMS } from "./nav";
 import { cn } from "@/lib/utils";
 import { useUI } from "@/store/ui";
+import { useAuth } from "@/auth/AuthContext";
+
+const ROLE_LABEL: Record<string, string> = {
+  MANAGER: "Manager",
+  FIELD_OFFICER: "Field Officer",
+};
 
 export function MobileTopbar() {
   const [open, setOpen] = useState(false);
   const setPaletteOpen = useUI((s) => s.setPaletteOpen);
+  const { user, logout } = useAuth();
 
   return (
     <>
@@ -56,6 +63,20 @@ export function MobileTopbar() {
                 );
               })}
             </nav>
+            {user && (
+              <div className="border-t border-border pt-2 mt-2 space-y-1">
+                <div className="px-2.5 py-1">
+                  <div className="text-xs font-medium truncate">{user.displayName || user.email}</div>
+                  <div className="text-[11px] text-muted">{ROLE_LABEL[user.role] ?? user.role}</div>
+                </div>
+                <button
+                  onClick={() => logout()}
+                  className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+                >
+                  <LogOut className="size-4" /> Sign out
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

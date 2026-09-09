@@ -49,9 +49,27 @@ export function getSyncError(): string | null {
   return lastSyncError;
 }
 
-function describeError(err: unknown): string {
+/** Shared by both write failures (drainOutbox, below) and realtime listener
+ * failures (firebaseBackend's onSnapshot error callback) — either way, a
+ * real rejection while online must surface as SYNC ERROR, never be
+ * swallowed silently (the earlier failure mode: a denied listener just
+ * left a collection permanently empty with no visible sign anything was
+ * wrong). */
+export function reportSyncError(message: string): void {
+  lastSyncError = message;
+  notifyChange();
+}
+
+export function clearSyncError(): void {
+  if (lastSyncError) {
+    lastSyncError = null;
+    notifyChange();
+  }
+}
+
+export function describeError(err: unknown): string {
   const code = (err as { code?: string } | undefined)?.code;
-  if (code === "permission-denied") return "Permission denied — you may not have access to update this record.";
+  if (code === "permission-denied") return "Permission denied — you may not have access to this data.";
   if (code === "unavailable") return "The server is temporarily unavailable.";
   return err instanceof Error ? err.message : "Sync failed.";
 }
@@ -72,14 +90,10 @@ export async function drainOutbox(backend: RemoteBackend): Promise<void> {
       if (entry.data === null) await backend.deleteDoc(entry.collection, entry.id);
       else await backend.putDoc(entry.collection, entry.id, entry.data);
       await del(key);
-      if (lastSyncError) {
-        lastSyncError = null;
-      }
-      notifyChange();
+      clearSyncError();
     } catch (err) {
       if (!navigator.onLine) break; // lost connectivity mid-drain — not an error
-      lastSyncError = describeError(err);
-      notifyChange();
+      reportSyncError(describeError(err));
       break;
     }
   }

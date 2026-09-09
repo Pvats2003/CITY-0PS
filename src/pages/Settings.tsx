@@ -10,6 +10,8 @@ import {
   CheckCircle2,
   PlusCircle,
   Cpu,
+  UserRound,
+  LogOut,
 } from "lucide-react";
 import { PageHeader } from "@/components/shared/PageHeader";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -29,11 +31,17 @@ import {
 import { useCity } from "@/store/city";
 import { generateDemoData } from "@/lib/demo/generate";
 import { isFirebaseConfigured } from "@/auth/config";
+import { useAuth } from "@/auth/AuthContext";
 import { validateBackup, mergeCityData } from "@/lib/backup";
 import { downloadCSV, downloadJSON } from "@/lib/csv";
 import { fmtDate } from "@/lib/dates";
 import type { CityData, Rig } from "@/types";
 import { RigFormDialog } from "@/components/forms/RigFormDialog";
+
+const ROLE_LABEL: Record<string, string> = {
+  MANAGER: "Manager",
+  FIELD_OFFICER: "Field Officer",
+};
 
 export default function Settings() {
   const data = useCity();
@@ -42,6 +50,7 @@ export default function Settings() {
   const updateSettings = useCity((s) => s.updateSettings);
   const loadData = useCity((s) => s.loadData);
   const clearAllData = useCity((s) => s.clearAllData);
+  const { user, logout, isDemoMode } = useAuth();
 
   const fileInput = useRef<HTMLInputElement>(null);
   const [importPreview, setImportPreview] = useState<{ data: CityData; counts: Record<string, number> } | null>(null);
@@ -172,6 +181,31 @@ export default function Settings() {
 
       <div className="px-4 md:px-6 pt-5 max-w-2xl space-y-5">
         {tab === "general" && (
+          <>
+          {user && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Account</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0 space-y-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex size-9 items-center justify-center rounded-full bg-primary/10 text-primary shrink-0">
+                    <UserRound className="size-4.5" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{user.displayName || user.email}</div>
+                    <div className="text-xs text-muted">
+                      {ROLE_LABEL[user.role] ?? user.role}
+                      {isDemoMode ? " · Demo mode" : ""}
+                    </div>
+                  </div>
+                </div>
+                <Button variant="secondary" onClick={() => logout()}>
+                  <LogOut className="size-4" /> Sign out
+                </Button>
+              </CardContent>
+            </Card>
+          )}
           <Card>
             <CardHeader>
               <CardTitle>City defaults</CardTitle>
@@ -225,6 +259,7 @@ export default function Settings() {
               </div>
             </CardContent>
           </Card>
+          </>
         )}
 
         {tab === "fleet" && (

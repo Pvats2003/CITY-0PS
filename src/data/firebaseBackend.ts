@@ -1,5 +1,6 @@
 import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc as fsDeleteDoc, query, orderBy, limit } from "firebase/firestore";
 import { getFirebaseApp } from "@/auth/firebaseApp";
+import { reportSyncError, describeError } from "./outbox";
 import type { CollectionName, RemoteBackend } from "./backend";
 
 /** The activity log is the one unbounded, high-write-frequency collection
@@ -25,9 +26,20 @@ export const firebaseBackend: RemoteBackend = {
     const db = getFirestore(getFirebaseApp());
     const ref =
       name === "activity" ? query(collection(db, name), orderBy("at", "desc"), limit(ACTIVITY_LISTEN_LIMIT)) : collection(db, name);
-    return onSnapshot(ref, (snap) => {
-      cb(snap.docs.map((d) => d.data() as never));
-    });
+    return onSnapshot(
+      ref,
+      (snap) => {
+        cb(snap.docs.map((d) => d.data() as never));
+      },
+      (err) => {
+        // Without this callback Firestore just drops the listener and logs
+        // to the console — the collection would go silently, permanently
+        // empty with no visible sign anything was wrong (the "blank UI from
+        // an unhandled permission-denied error" failure mode). Route it into
+        // the same SYNC ERROR surface as write failures instead.
+        reportSyncError(describeError(err));
+      },
+    );
   },
   async putDoc(name, id, data) {
     const db = getFirestore(getFirebaseApp());

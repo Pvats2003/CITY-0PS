@@ -566,7 +566,12 @@ function ProfileTab({ foId, isPreview }: { foId: string; isPreview: boolean }) {
           {fo.name.split(" ").map((p) => p[0]).join("").slice(0, 2)}
         </div>
         <div>
-          <div className="text-base font-semibold">{fo.name}</div>
+          <div className="flex items-center gap-2">
+            <div className="text-base font-semibold">{fo.name}</div>
+            <span className="rounded-full bg-primary/10 text-primary text-[10px] font-medium px-2 py-0.5">
+              Field Officer
+            </span>
+          </div>
           <div className="text-xs text-muted">{fo.homeArea}</div>
         </div>
       </div>
@@ -576,6 +581,10 @@ function ProfileTab({ foId, isPreview }: { foId: string; isPreview: boolean }) {
         <div className="flex items-center justify-between">
           <span>Signed in as</span>
           <span className="text-foreground">{user?.email ?? "—"}</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span>Role</span>
+          <span className="text-foreground">Field Officer</span>
         </div>
         <div className="flex items-center justify-between">
           <span>Mode</span>
