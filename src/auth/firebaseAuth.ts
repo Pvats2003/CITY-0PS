@@ -1,6 +1,7 @@
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from "firebase/auth";
 import { getFirestore, doc, getDoc } from "firebase/firestore";
 import { getFirebaseApp } from "./firebaseApp";
+import { setProfileDiagSnapshot } from "./profileDiag";
 import type { AppUser, AuthEvent, AuthProvider, UserRole } from "./types";
 
 interface UserDoc {
@@ -73,7 +74,21 @@ async function loadAppUser(fbUser: User): Promise<AppUser | null> {
   // code path here that could read a different uid's document; this
   // confirms that at the source rather than by inference.
   console.log("[CITY-OPS-DIAG] profile primitive values", "uid=", fbUser.uid, "path=", docPath, "exists=", snap.exists());
-  if (!snap.exists()) return null;
+  if (!snap.exists()) {
+    // Captured even on "doesn't exist" — an on-page diagnostic panel
+    // needs to show this state too, not just the success case.
+    setProfileDiagSnapshot({
+      authUid: fbUser.uid,
+      path: docPath,
+      exists: false,
+      docId: null,
+      keys: [],
+      rawRole: undefined,
+      rawFoId: undefined,
+      capturedAt: Date.now(),
+    });
+    return null;
+  }
   const data = snap.data() as UserDoc;
   // Object.keys(data) is the actual, literal set of field names the SDK
   // read back — the one thing that definitively rules a field-name
@@ -90,6 +105,21 @@ async function loadAppUser(fbUser: User): Promise<AppUser | null> {
     "foIdLength=", typeof data.foId === "string" ? data.foId.length : -1,
     "keys=", JSON.stringify(Object.keys(data)),
   );
+  // snap.id is the Firestore document's own id — doc(db, "users",
+  // fbUser.uid) forces this to equal fbUser.uid by construction (there is
+  // no code path that could substitute a different document), but it's
+  // captured and compared explicitly by the diagnostic panel rather than
+  // assumed, per the requirement to prove this rather than infer it.
+  setProfileDiagSnapshot({
+    authUid: fbUser.uid,
+    path: docPath,
+    exists: true,
+    docId: snap.id,
+    keys: Object.keys(data),
+    rawRole: data.role,
+    rawFoId: data.foId,
+    capturedAt: Date.now(),
+  });
   // Trim, don't guess: a Console-entered value can pick up incidental
   // leading/trailing whitespace (easy to introduce, invisible in the
   // Console UI, and would otherwise make an exact-match lookup fail). This

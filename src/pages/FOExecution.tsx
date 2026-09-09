@@ -35,6 +35,7 @@ import { PostSessionCheckDialog } from "@/components/forms/PostSessionCheckDialo
 import { useAuth } from "@/auth/AuthContext";
 import { useSyncStatus } from "@/data/useSyncStatus";
 import { useCollectionSyncStatus } from "@/data/useCollectionSyncStatus";
+import { FoDiagnosticPanel } from "@/components/FoDiagnosticPanel";
 import type { Assignment } from "@/types";
 
 type BottomTab = "today" | "sessions" | "issues" | "profile";
@@ -149,6 +150,27 @@ export default function FOExecution() {
     // Manager preview of a specific FO that no longer exists.
     if (params.id) return <Navigate to="/field-officers" replace />;
 
+    // Defensive: RequireRole already guarantees a signed-in user before
+    // this component ever renders, so this should be unreachable in
+    // practice — kept as its own explicit branch (rather than falling into
+    // the foId-missing/fo-not-found text below, which would render an
+    // awkward "undefined") since the diagnostic panel now explicitly
+    // supports this state and a real bug that somehow reached it deserves
+    // a clear message, not a broken one.
+    if (screen === "profile-missing") {
+      return (
+        <div className="min-h-dvh flex flex-col items-center justify-center gap-3 bg-background text-foreground max-w-md mx-auto border-x border-border p-6 text-center">
+          <UserRound className="size-10 text-muted" />
+          <div className="text-base font-semibold">No signed-in account found</div>
+          <p className="text-sm text-muted">Your session doesn't have an authenticated profile. Try signing in again.</p>
+          <Link to="/fo/login" className="text-sm text-primary hover:underline">
+            Go to sign in
+          </Link>
+          <FoDiagnosticPanel requestedFoId={id} matchedFoId={null} matchedFoName={null} fosCount={data.fos.length} fosSync={fosSync} screen={screen} />
+        </div>
+      );
+    }
+
     if (screen === "permission-error") {
       return (
         <div className="min-h-dvh flex flex-col items-center justify-center gap-3 bg-background text-foreground max-w-md mx-auto border-x border-border p-6 text-center">
@@ -163,6 +185,14 @@ export default function FOExecution() {
               <LogOut className="size-4" /> Sign out
             </Button>
           </div>
+          <FoDiagnosticPanel
+            requestedFoId={id}
+            matchedFoId={null}
+            matchedFoName={null}
+            fosCount={data.fos.length}
+            fosSync={fosSync}
+            screen={screen}
+          />
         </div>
       );
     }
@@ -178,6 +208,14 @@ export default function FOExecution() {
           <RefreshCw className="size-8 text-muted animate-spin" />
           <div className="text-base font-semibold">Loading your field officer profile…</div>
           <p className="text-sm text-muted">Syncing with your city's data.</p>
+          <FoDiagnosticPanel
+            requestedFoId={id}
+            matchedFoId={null}
+            matchedFoName={null}
+            fosCount={data.fos.length}
+            fosSync={fosSync}
+            screen={screen}
+          />
         </div>
       );
     }
@@ -199,6 +237,14 @@ export default function FOExecution() {
         <Button variant="secondary" onClick={() => logout()}>
           <LogOut className="size-4" /> Sign out
         </Button>
+        <FoDiagnosticPanel
+          requestedFoId={id}
+          matchedFoId={null}
+          matchedFoName={null}
+          fosCount={data.fos.length}
+          fosSync={fosSync}
+          screen={screen}
+        />
       </div>
     );
   }
