@@ -87,10 +87,15 @@ export default function FOExecution() {
   useEffect(() => {
     if (!params.id) {
       console.info("[CITY-OPS-DIAG] FO resolution", {
-        requestedFoId: id,
-        matchedFoId: fo?.id ?? null,
+        t: Math.round(performance.now()),
+        uid: user?.id ?? null,
+        role: user?.role ?? null,
+        requestedFoId: id ?? null,
+        requestedFoIdType: typeof id,
+        hasFoId: Boolean(user?.foId),
         loadedFoCount: data.fos.length,
         loadedFoIds: data.fos.map((f) => f.id),
+        matchedFoId: fo?.id ?? null,
         fosSyncStatus,
         hasSyncedOnce: fosSyncStatus === "ready",
         hasSyncError: syncStatus.status === "error",
@@ -98,7 +103,7 @@ export default function FOExecution() {
         generalSyncError: syncStatus.errorMessage,
       });
     }
-  }, [fo, params.id, id, data.fos, fosSyncStatus, syncStatus.status, syncStatus.errorMessage]);
+  }, [fo, params.id, id, user, data.fos, fosSyncStatus, syncStatus.status, syncStatus.errorMessage]);
 
   if (!fo) {
     // Manager preview of a specific FO that no longer exists.

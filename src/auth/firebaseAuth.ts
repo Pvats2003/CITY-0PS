@@ -68,8 +68,14 @@ function describeAuthError(err: unknown): string {
  * function silently coercing or rejecting it. */
 async function loadAppUser(fbUser: User): Promise<AppUser | null> {
   const db = getFirestore(getFirebaseApp());
+  const docPath = `users/${fbUser.uid}`;
   const snap = await getDoc(doc(db, "users", fbUser.uid));
   authLog("users/", fbUser.uid, "exists =", snap.exists());
+  // Explicit path/existence trace — the doc path is BUILT from
+  // fbUser.uid directly (doc(db, "users", fbUser.uid)), so there is no
+  // code path here that could read a different uid's document; this
+  // confirms that at the source rather than by inference.
+  prodDiag("users/{uid} read", { uid: fbUser.uid, path: docPath, exists: snap.exists() });
   if (!snap.exists()) return null;
   const data = snap.data() as UserDoc;
   // `keys` is the actual, literal set of field names the SDK read back —
@@ -91,7 +97,7 @@ async function loadAppUser(fbUser: User): Promise<AppUser | null> {
   // authoritative — it never substitutes a different field or value.
   const role = typeof data.role === "string" ? (data.role.trim() as UserRole) : data.role;
   const foId = typeof data.foId === "string" ? data.foId.trim() || undefined : data.foId;
-  return {
+  const appUser: AppUser = {
     id: fbUser.uid,
     email: fbUser.email ?? "",
     role,
@@ -99,6 +105,19 @@ async function loadAppUser(fbUser: User): Promise<AppUser | null> {
     displayName: data.displayName ?? fbUser.displayName ?? undefined,
     createdAt: data.createdAt ?? new Date().toISOString(),
   };
+  // Logged separately from "profile loaded" above (which shows the raw
+  // Firestore data) so a construction-stage bug — foId present in data but
+  // lost while building AppUser — would show up as a mismatch between the
+  // two log lines instead of being invisible.
+  prodDiag("AppUser constructed", {
+    uid: appUser.id,
+    role: appUser.role,
+    foId: appUser.foId,
+    foIdType: typeof appUser.foId,
+    hasFoId: Boolean(appUser.foId),
+    firestoreKeys: Object.keys(data),
+  });
+  return appUser;
 }
 
 export const firebaseAuthProvider: AuthProvider = {
