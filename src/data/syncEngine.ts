@@ -8,14 +8,14 @@ import { enqueue, drainOutbox, clearSyncError, getCollectionSyncError } from "./
 import type { CityStore } from "@/store/city";
 
 /** Mirrors firestore.rules exactly: a Field Officer has an explicit `match`
- * block granting read on only these 8 collections; the rest (collectors,
- * evidence, qualityReviews, correctiveActions, repairRecords, plans,
- * reports) fall through to the Manager-only wildcard rule. Subscribing an
- * FO to those anyway is a request Firestore will always deny by design —
- * not a rules bug, but doing it anyway poisons the shared sync-error state
- * with an expected denial, masking whether collections the FO IS granted
- * (like fos) are actually working. Keep in sync with firestore.rules if
- * that file's FO grants ever change. */
+ * block granting read on only these 9 collections; the rest (collectors,
+ * qualityReviews, correctiveActions, repairRecords, plans, reports) fall
+ * through to the Manager-only wildcard rule. Subscribing an FO to those
+ * anyway is a request Firestore will always deny by design — not a rules
+ * bug, but doing it anyway poisons the shared sync-error state with an
+ * expected denial, masking whether collections the FO IS granted (like
+ * fos) are actually working. Keep in sync with firestore.rules if that
+ * file's FO grants ever change. */
 const FIELD_OFFICER_COLLECTIONS: CollectionName[] = ["fos", "businesses", "rigs", "assignments", "sessions", "issues", "rigIncidents", "activity", "evidence"];
 
 function collectionsForRole(role: UserRole | null): CollectionName[] {

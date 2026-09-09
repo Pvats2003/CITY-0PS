@@ -35,9 +35,9 @@ export interface AuthReady {
  *
  * 2. Scope WHICH collections get subscribed to what this role can actually
  *    read. firestore.rules grants a Field Officer explicit read access to
- *    only 8 of the app's 15 shared collections (fos, businesses, rigs,
- *    assignments, sessions, issues, rigIncidents, activity) — the rest
- *    (collectors, evidence, qualityReviews, correctiveActions,
+ *    only 9 of the app's 15 shared collections (fos, businesses, rigs,
+ *    assignments, sessions, issues, rigIncidents, activity, evidence) —
+ *    the rest (collectors, qualityReviews, correctiveActions,
  *    repairRecords, plans, reports) are Manager-only by design. Without
  *    this, the sync engine subscribes to all 15 for every signed-in user
  *    regardless of role, and for an FO those other 7 get denied — not a
