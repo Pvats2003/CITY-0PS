@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Copy, Check } from "lucide-react";
 import { useAuth } from "@/auth/AuthContext";
 import { useProfileDiag } from "@/auth/useProfileDiag";
+import { useFosDiag } from "@/data/useFosDiag";
 import { BUILD_SHA, BUILD_TIME } from "@/lib/buildInfo";
 import { Button } from "@/components/ui/button";
 import type { CollectionSyncState } from "@/data/useCollectionSyncStatus";
@@ -77,8 +78,18 @@ export interface FoDiagnosticPanelProps {
 export function FoDiagnosticPanel({ requestedFoId, matchedFoId, matchedFoName, fosCount, fosSync, screen }: FoDiagnosticPanelProps) {
   const { user, isDemoMode } = useAuth();
   const profileDiag = useProfileDiag();
+  const fosDiag = useFosDiag();
   const projectId = useFirebaseProjectId();
   const [copied, setCopied] = useState(false);
+
+  // Every fos candidate as it actually arrived — the Firestore document ID
+  // (Console-visible, never used for matching) shown separately from the
+  // app-level data.id (what user.foId is actually compared against), per
+  // record, with an explicit exact/trim match verdict against the
+  // currently requested foId. Sourced from fosDiag.ts, which captures this
+  // BEFORE firebaseBackend.ts's own mapping discards the Firestore doc ID
+  // (see that file's subscribeCollection).
+  const candidates = fosDiag?.records ?? [];
 
   const authUid = profileDiag?.authUid ?? user?.id ?? null;
   const docId = profileDiag?.docId ?? null;
@@ -119,6 +130,15 @@ export function FoDiagnosticPanel({ requestedFoId, matchedFoId, matchedFoName, f
     `MATCHED_FO_NAME=${matchedFoName ?? "NONE"}`,
     `CURRENT_SCREEN=${screen}`,
     `SYNC_ERROR=${syncErrorText}`,
+    `FOS_CANDIDATES=${JSON.stringify(
+      candidates.map((c) => ({
+        docId: c.docId,
+        dataId: c.dataId,
+        dataIdType: c.dataIdType,
+        name: c.name,
+        exactMatch: c.dataId === rawFoId,
+      })),
+    )}`,
   ];
 
   async function handleCopy() {
@@ -171,6 +191,31 @@ export function FoDiagnosticPanel({ requestedFoId, matchedFoId, matchedFoName, f
       <Row label="Requested foId" value={displayValue(requestedFoId ?? null)} />
       <Row label="Matched FO id" value={matchedFoId ?? "NONE"} />
       <Row label="Matched FO name" value={matchedFoName ?? "NONE"} />
+
+      {candidates.length > 0 && (
+        <>
+          <div className="h-px bg-border my-1.5" />
+          <div className="text-[10px] uppercase tracking-wide text-muted-2 mb-1">FO candidates (raw Firestore snapshot)</div>
+          {candidates.map((c, i) => {
+            const dataIdStr = typeof c.dataId === "string" ? c.dataId : null;
+            const reqStr = typeof rawFoId === "string" ? rawFoId : null;
+            const exactMatch = c.dataId === rawFoId;
+            const trimMatch = dataIdStr !== null && reqStr !== null && dataIdStr.trim() === reqStr.trim();
+            const candidateSuspicious = dataIdStr !== null && isSuspiciousString(dataIdStr);
+            return (
+              <div key={c.docId + i} className="mb-1.5 pl-2 border-l-2 border-border">
+                <Row label={`#${i} Firestore doc ID`} value={c.docId} />
+                <Row label={`#${i} data.id`} value={displayValue(c.dataId)} />
+                <Row label={`#${i} data.id type`} value={c.dataIdType} />
+                {candidateSuspicious && dataIdStr !== null && <Row label={`#${i} data.id chars`} value={charCodesOf(dataIdStr)} />}
+                <Row label={`#${i} name`} value={displayValue(c.name)} />
+                <Row label={`#${i} exact match`} value={exactMatch ? "YES" : "NO"} />
+                <Row label={`#${i} trim match`} value={trimMatch ? "YES" : "NO"} />
+              </div>
+            );
+          })}
+        </>
+      )}
 
       <div className="h-px bg-border my-1.5" />
       <Row label="Current screen" value={screen} />

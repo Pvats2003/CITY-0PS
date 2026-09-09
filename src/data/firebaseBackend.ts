@@ -1,6 +1,7 @@
 import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc as fsDeleteDoc, query, orderBy, limit } from "firebase/firestore";
 import { getFirebaseApp } from "@/auth/firebaseApp";
 import { reportSyncError, describeError } from "./outbox";
+import { setFosDiagSnapshot } from "./fosDiag";
 import type { CollectionName, RemoteBackend } from "./backend";
 
 /** The activity log is the one unbounded, high-write-frequency collection
@@ -46,13 +47,19 @@ export const firebaseBackend: RemoteBackend = {
           // carries: the Firestore document ID (snap doc.id) is
           // deliberately NOT used for matching anywhere in this app (see
           // FOExecution.tsx) — only the app-level `id` field inside the
-          // document's own data is.
-          snap.docs.forEach((d, i) => {
-            const dataId = (d.data() as { id?: unknown }).id;
+          // document's own data is. Captured into fosDiag.ts (not just
+          // logged) so the on-page diagnostic panel can render the same
+          // doc-ID/data-ID split from a screenshot, since console output
+          // has repeatedly proven unreliable to capture from production.
+          const records = snap.docs.map((d, i) => {
+            const data = d.data() as { id?: unknown; name?: unknown };
+            const dataId = data.id;
             console.log(
               "[CITY-OPS-DIAG] fos doc[" + i + "] firestoreDocId=" + d.id + " dataId=" + JSON.stringify(dataId) + " dataIdType=" + typeof dataId,
             );
+            return { docId: d.id, dataId, dataIdType: typeof dataId, name: data.name };
           });
+          setFosDiagSnapshot(records);
         }
         cb(snap.docs.map((d) => d.data() as never));
       },

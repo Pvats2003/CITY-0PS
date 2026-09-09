@@ -35,6 +35,7 @@ import { PostSessionCheckDialog } from "@/components/forms/PostSessionCheckDialo
 import { useAuth } from "@/auth/AuthContext";
 import { useSyncStatus } from "@/data/useSyncStatus";
 import { useCollectionSyncStatus } from "@/data/useCollectionSyncStatus";
+import { useFosDiag } from "@/data/useFosDiag";
 import { FoDiagnosticPanel } from "@/components/FoDiagnosticPanel";
 import type { Assignment } from "@/types";
 
@@ -69,6 +70,7 @@ export default function FOExecution() {
   // otherwise) must never surface here. See useCollectionSyncStatus.ts /
   // outbox.ts's per-collection error map.
   const fosSync = useCollectionSyncStatus("fos");
+  const fosDiag = useFosDiag();
   const date = todayISO();
   const [tab, setTab] = useState<BottomTab>("today");
   const [selected, setSelected] = useState<string | null>(null);
@@ -132,6 +134,39 @@ export default function FOExecution() {
       "hasSyncedOnce=", fosSync.hasSyncedOnce,
       "syncError=", fosSync.error ?? null,
     );
+
+    // The exact operands of `f.id === id` below, dumped as primitives
+    // before the comparison runs — never summarized as an Object/Array, so
+    // a screenshot of the console (or the on-page panel, which renders the
+    // same data — see FoDiagnosticPanel's candidates section) shows exactly
+    // what each fos record's app-level id is, not what we assume it is.
+    const requestedFoId = user?.foId;
+    console.log(
+      "[CITY-OPS-DIAG] FO_MATCH_INPUT",
+      "requestedFoId=" + JSON.stringify(requestedFoId),
+      "requestedFoIdType=" + typeof requestedFoId,
+      "fosCount=" + data.fos.length,
+      "fosIds=" + JSON.stringify(data.fos.map((f) => f.id)),
+      "fosIdTypes=" + JSON.stringify(data.fos.map((f) => typeof f.id)),
+      "fosNames=" + JSON.stringify(data.fos.map((f) => f.name)),
+    );
+    data.fos.forEach((f, i) => {
+      console.log(
+        "[CITY-OPS-DIAG] FO_CANDIDATE",
+        "index=" + i,
+        "dataId=" + JSON.stringify(f.id),
+        "dataIdType=" + typeof f.id,
+        "dataIdLength=" + (typeof f.id === "string" ? f.id.length : -1),
+        "name=" + JSON.stringify(f.name),
+        "exactEqual=" + (f.id === requestedFoId),
+        "trimEqual=" +
+          (typeof f.id === "string" && typeof requestedFoId === "string" && f.id.trim() === requestedFoId.trim()),
+      );
+    });
+    const exactMatch = fo !== undefined;
+    const trimMatch = data.fos.some(
+      (f) => typeof f.id === "string" && typeof requestedFoId === "string" && f.id.trim() === requestedFoId.trim(),
+    );
     console.log(
       "[CITY-OPS-DIAG] FO_STATE",
       "auth=", user ? "authed" : "unauthed",
@@ -140,11 +175,16 @@ export default function FOExecution() {
       "foId=", JSON.stringify(user?.foId ?? null),
       "fosSync=", fosSync.status,
       "fosCount=", data.fos.length,
+      "fosIds=", JSON.stringify(data.fos.map((f) => f.id)),
+      "fosDocIds=", JSON.stringify(fosDiag?.records.map((r) => r.docId) ?? []),
+      "fosNames=", JSON.stringify(data.fos.map((f) => f.name)),
       "matchedFo=", fo?.id ?? null,
+      "exactMatch=", exactMatch,
+      "trimMatch=", trimMatch,
       "syncError=", fosSync.error ?? null,
       "screen=", screen,
     );
-  }, [fo, params.id, id, user, data.fos, fosSync.status, fosSync.hasSyncedOnce, fosSync.error, screen]);
+  }, [fo, params.id, id, user, data.fos, fosSync.status, fosSync.hasSyncedOnce, fosSync.error, screen, fosDiag]);
 
   if (!fo) {
     // Manager preview of a specific FO that no longer exists.
