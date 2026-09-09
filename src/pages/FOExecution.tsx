@@ -63,6 +63,22 @@ export default function FOExecution() {
     [data.assignments, id, date],
   );
 
+  // TEMPORARY production diagnostic (see firebaseAuth.ts's prodDiag) — logs
+  // once per real change, not on the 1s tick above, so it stays quiet. Only
+  // fires for the FO's own login (never the manager-preview path), and only
+  // ever logs ids/counts, never anything sensitive. Safe to delete once the
+  // live "foId reads as missing/mismatched" issue is confirmed resolved.
+  useEffect(() => {
+    if (!fo && !params.id) {
+      console.info("[CITY-OPS-DIAG] FO record not found for logged-in user", {
+        triedId: id,
+        userFoId: user?.foId,
+        fosLoadedCount: data.fos.length,
+        fosIds: data.fos.map((f) => f.id),
+      });
+    }
+  }, [fo, params.id, id, user?.foId, data.fos]);
+
   if (!fo) {
     // Manager preview of a specific FO that no longer exists.
     if (params.id) return <Navigate to="/field-officers" replace />;

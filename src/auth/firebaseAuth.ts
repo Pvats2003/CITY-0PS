@@ -17,6 +17,17 @@ function authLog(...args: unknown[]) {
   if (import.meta.env.DEV) console.debug("[auth]", ...args);
 }
 
+/** TEMPORARY — unlike authLog above, this is NOT DEV-gated: it's here to
+ * get real signal from the live production site, where DEV-only logs never
+ * fire (Vite bakes import.meta.env.DEV to false in a production build).
+ * Only ever prints uid, role, and foId's exact key/value/type as read from
+ * Firestore — never email, password, or tokens. Safe to delete once the
+ * live "foId reads as missing despite being set in the console" issue is
+ * confirmed resolved. */
+function prodDiag(label: string, info: Record<string, unknown>) {
+  console.info(`[CITY-OPS-DIAG] ${label}`, info);
+}
+
 /** Common Firebase Auth error codes mapped to messages a field worker or
  * manager can actually act on, instead of the raw "Firebase: Error
  * (auth/wrong-password)." string. Falls back to the SDK's own message for
@@ -61,12 +72,30 @@ async function loadAppUser(fbUser: User): Promise<AppUser | null> {
   authLog("users/", fbUser.uid, "exists =", snap.exists());
   if (!snap.exists()) return null;
   const data = snap.data() as UserDoc;
-  authLog("users/", fbUser.uid, "role =", data.role, "| foId", data.foId ? "present" : "missing");
+  // `keys` is the actual, literal set of field names the SDK read back —
+  // the one thing that definitively rules a field-name mismatch (wrong
+  // case, stray whitespace, a homoglyph typed into the Firebase console) in
+  // or out, which no amount of staring at the console's rendered UI can.
+  prodDiag("users/{uid} profile loaded", {
+    uid: fbUser.uid,
+    keys: Object.keys(data),
+    role: data.role,
+    foId: data.foId,
+    foIdType: typeof data.foId,
+    hasFoId: Boolean(data.foId),
+  });
+  // Trim, don't guess: a Console-entered value can pick up incidental
+  // leading/trailing whitespace (easy to introduce, invisible in the
+  // Console UI, and would otherwise make an exact-match lookup fail). This
+  // only normalizes whitespace on the field this app already treats as
+  // authoritative — it never substitutes a different field or value.
+  const role = typeof data.role === "string" ? (data.role.trim() as UserRole) : data.role;
+  const foId = typeof data.foId === "string" ? data.foId.trim() || undefined : data.foId;
   return {
     id: fbUser.uid,
     email: fbUser.email ?? "",
-    role: data.role,
-    foId: data.foId,
+    role,
+    foId,
     displayName: data.displayName ?? fbUser.displayName ?? undefined,
     createdAt: data.createdAt ?? new Date().toISOString(),
   };
