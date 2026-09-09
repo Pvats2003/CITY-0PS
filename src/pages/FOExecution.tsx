@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, Navigate } from "react-router-dom";
 import {
   ChevronLeft,
@@ -19,16 +19,30 @@ import {
   LogOut,
   WifiOff,
   RefreshCw,
+  Camera,
+  Lock,
+  ClipboardCheck,
 } from "lucide-react";
 import { useCity } from "@/store/city";
 import { todayISO, fmtTime, fmtDate, fmtHours } from "@/lib/dates";
-import { checkInAssignment, startSessionForAssignment, logRigPreflightPassed } from "@/engine/workflows";
-import { buildRigSummary, isDeployable } from "@/engine/rigGuardian";
+import {
+  checkInAssignment,
+  startSessionForAssignment,
+  markEnRoute,
+  captureLocationEvidence,
+  captureStepEvidence,
+  submitPrecheck,
+  startInstallation,
+  completeInstallationVerification,
+} from "@/engine/workflows";
+import { buildRigSummary, isDeployable, proposeRigReplacement } from "@/engine/rigGuardian";
+import { deriveExecutionStage, evidenceCompleteness, PRECHECK_ITEMS, INSTALLATION_ITEMS } from "@/engine/execution";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/status";
 import { cn } from "@/lib/utils";
+import { id as genId } from "@/lib/id";
 import { IssueFormDialog } from "@/components/forms/IssueFormDialog";
 import { RigIncidentFormDialog } from "@/components/forms/RigIncidentFormDialog";
 import { PostSessionCheckDialog } from "@/components/forms/PostSessionCheckDialog";
@@ -37,7 +51,7 @@ import { useSyncStatus } from "@/data/useSyncStatus";
 import { useCollectionSyncStatus } from "@/data/useCollectionSyncStatus";
 import { useFosDiag } from "@/data/useFosDiag";
 import { FoDiagnosticPanel } from "@/components/FoDiagnosticPanel";
-import type { Assignment } from "@/types";
+import type { Assignment, EvidenceFile } from "@/types";
 
 type BottomTab = "today" | "sessions" | "issues" | "profile";
 
@@ -452,35 +466,191 @@ function TodayList({ assignments, onSelect }: { assignments: Assignment[]; onSel
   );
 }
 
+function PhotoCapture({ label, files, onChange }: { label: string; files: EvidenceFile[]; onChange: (files: EvidenceFile[]) => void }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  function handleFiles(fl: FileList | null) {
+    if (!fl || fl.length === 0) return;
+    const items: EvidenceFile[] = Array.from(fl).map((f) => ({
+      id: genId("file"),
+      name: f.name,
+      type: f.type || "image/jpeg",
+      sizeBytes: f.size,
+      localUrl: URL.createObjectURL(f),
+      capturedAt: new Date().toISOString(),
+    }));
+    onChange([...files, ...items]);
+  }
+  return (
+    <div className="flex items-center gap-2">
+      <input ref={inputRef} type="file" accept="image/*" capture="environment" multiple hidden onChange={(e) => handleFiles(e.target.files)} />
+      <Button type="button" variant="secondary" size="sm" onClick={() => inputRef.current?.click()}>
+        <Camera className="size-3.5" /> {label} {files.length > 0 ? `(${files.length})` : ""}
+      </Button>
+      {files.length > 0 && <CheckCircle2 className="size-4 text-success" />}
+    </div>
+  );
+}
+
+function EvidenceProgress({ assignment }: { assignment: Assignment }) {
+  const data = useCity();
+  const completeness = useMemo(() => evidenceCompleteness(assignment, data.evidence), [assignment, data.evidence]);
+  return (
+    <div className="rounded-lg border border-border bg-surface-2/50 p-3 text-xs">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="font-medium">EVIDENCE</span>
+        <span className="tabular-nums text-muted">
+          {completeness.completeCount} / {completeness.totalCount} COMPLETE
+        </span>
+      </div>
+      <div className="space-y-1">
+        {completeness.slots.map((s) => (
+          <div key={s.key} className="flex items-center gap-1.5">
+            {s.present ? <CheckCircle2 className="size-3.5 text-success shrink-0" /> : <Circle className="size-3.5 text-muted-2 shrink-0" />}
+            <span className={s.present ? "text-foreground" : "text-muted"}>{s.label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ExecutionFlow({ assignment }: { assignment: Assignment }) {
   const data = useCity();
   const business = data.businesses.find((b) => b.id === assignment.businessId);
   const rig = data.rigs.find((r) => r.id === assignment.rigId);
   const rigSummary = rig ? buildRigSummary(data, rig) : null;
   const session = data.sessions.find((s) => s.id === assignment.sessionId && s.status !== "completed") ?? (assignment.sessionId ? data.sessions.find((s) => s.id === assignment.sessionId) : undefined);
-  const [checklist, setChecklist] = useState({
-    confirmedBusiness: false,
-    scannedRig: false,
-    checkedBattery: false,
-    checkedStorage: false,
-    confirmedCollector: false,
-    capturedEvidence: false,
-  });
+  const assignmentEvidence = useMemo(() => data.evidence.filter((e) => e.assignmentId === assignment.id), [data.evidence, assignment.id]);
+  const stage = useMemo(() => deriveExecutionStage(assignment, data.evidence, session), [assignment, data.evidence, session]);
+
   const [issueOpen, setIssueOpen] = useState(false);
   const [preflightIssueOpen, setPreflightIssueOpen] = useState(false);
   const [postCheckOpen, setPostCheckOpen] = useState(false);
+  const [locBusy, setLocBusy] = useState(false);
+  const [locError, setLocError] = useState<string | null>(null);
+  const [arrivalPhotos, setArrivalPhotos] = useState<EvidenceFile[]>([]);
+  const [precheckChecklist, setPrecheckChecklist] = useState<Record<string, boolean>>({});
+  const [precheckPhotos, setPrecheckPhotos] = useState<EvidenceFile[]>([]);
+  const [installPhotos, setInstallPhotos] = useState<EvidenceFile[]>([]);
+  const [cablePhotos, setCablePhotos] = useState<EvidenceFile[]>([]);
+  const [finalPhotos, setFinalPhotos] = useState<EvidenceFile[]>([]);
+  const [installChecklist, setInstallChecklist] = useState<Record<string, boolean>>({});
+  const [verifyChecklist, setVerifyChecklist] = useState<Record<string, boolean>>({});
+  const [completionPhotos, setCompletionPhotos] = useState<EvidenceFile[]>([]);
 
-  if (assignment.status === "completed") {
+  function handleArrive() {
+    setLocBusy(true);
+    setLocError(null);
+    checkInAssignment(assignment);
+    if (!navigator.geolocation) {
+      captureLocationEvidence(assignment, business, 0, 0);
+      setLocBusy(false);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        captureLocationEvidence(assignment, business, pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+        setLocBusy(false);
+      },
+      (err) => {
+        setLocBusy(false);
+        setLocError(err.message || "Could not get your location. Check location permissions and try again.");
+      },
+      { enableHighAccuracy: true, timeout: 10000 },
+    );
+  }
+
+  // Only recheck requests the FO hasn't already responded to — once a
+  // replacement is submitted (replacesEvidenceId set), the original stays
+  // "recheck_requested" forever (append-only history) but must stop
+  // prompting for another retake; the Manager reviewing the new submission
+  // is what actually clears the request.
+  const recheckEvidence = assignmentEvidence.filter(
+    (e) => e.status === "recheck_requested" && !assignmentEvidence.some((other) => other.replacesEvidenceId === e.id),
+  );
+  if (assignment.reviewStatus === "recheck_requested" && recheckEvidence.length > 0) {
+    return (
+      <div className="p-4 space-y-4">
+        <div className="rounded-xl border border-warning/30 bg-warning-bg p-5 text-center space-y-1">
+          <AlertTriangle className="size-8 text-warning mx-auto" />
+          <div className="text-base font-bold text-warning">ACTION REQUIRED</div>
+          <div className="text-sm">{business?.name}{rig ? ` · ${rig.code}` : ""}</div>
+        </div>
+        {recheckEvidence.map((e) => (
+          <div key={e.id} className="rounded-lg border border-border p-3 space-y-2">
+            <div className="text-xs font-semibold text-muted">{e.type.replace(/_/g, " ")}</div>
+            <div className="text-sm">Manager request: {e.reviewNote || "Please resubmit this evidence."}</div>
+            <PhotoCapture
+              label="Retake photo"
+              files={[]}
+              onChange={(files) => captureStepEvidence(assignment, e.type, files, undefined, e.id)}
+            />
+          </div>
+        ))}
+        <div className="text-xs text-muted text-center">Original evidence is kept on record — your new submission is added alongside it.</div>
+      </div>
+    );
+  }
+
+  if (assignment.reviewStatus === "recheck_requested" && recheckEvidence.length === 0) {
+    // Every requested item has a resubmission on record — nothing left for
+    // the FO to do; only the Manager's next review can clear this status.
+    return (
+      <div className="p-4 space-y-4">
+        <div className="rounded-xl border border-info/30 bg-info-bg p-5 text-center space-y-1">
+          <ClipboardCheck className="size-8 text-info mx-auto" />
+          <div className="text-base font-bold text-info">RESUBMITTED</div>
+          <div className="text-sm">{business?.name} — waiting on your Manager to review the new evidence.</div>
+        </div>
+        <EvidenceProgress assignment={assignment} />
+      </div>
+    );
+  }
+
+  if (assignment.reviewStatus === "approved" || stage === "approved") {
     return (
       <div className="p-6 text-center space-y-2">
         <CheckCircle2 className="size-10 text-success mx-auto" />
-        <div className="text-base font-semibold">Visit completed</div>
+        <div className="text-base font-semibold">Approved</div>
         <div className="text-sm text-muted">{business?.name} — nice work.</div>
       </div>
     );
   }
 
-  if (!assignment.actualArrivalAt) {
+  if (stage === "ready_for_review") {
+    return (
+      <div className="p-4 space-y-4">
+        <div className="rounded-xl border border-info/30 bg-info-bg p-5 text-center space-y-1">
+          <ClipboardCheck className="size-8 text-info mx-auto" />
+          <div className="text-base font-bold text-info">READY FOR REVIEW</div>
+          <div className="text-sm">{business?.name} — waiting on your Manager.</div>
+        </div>
+        <EvidenceProgress assignment={assignment} />
+      </div>
+    );
+  }
+
+  if (assignment.status === "completed" && stage === "completion") {
+    return (
+      <div className="p-4 space-y-4">
+        <Section title="COMPLETION EVIDENCE">
+          <div className="text-sm text-muted mb-2">Add the remaining evidence before this visit is ready for review.</div>
+          <PhotoCapture label="Completion photo" files={completionPhotos} onChange={setCompletionPhotos} />
+        </Section>
+        <EvidenceProgress assignment={assignment} />
+        <Button
+          size="lg"
+          className="w-full h-14 text-base"
+          disabled={completionPhotos.length === 0}
+          onClick={() => captureStepEvidence(assignment, "SESSION_END", completionPhotos)}
+        >
+          <CheckCircle2 className="size-5" /> Submit Evidence
+        </Button>
+      </div>
+    );
+  }
+
+  if (stage === "assigned" || stage === "en_route" || !assignment.actualArrivalAt) {
     return (
       <div className="p-4 space-y-4">
         <Section title="ARRIVAL">
@@ -498,14 +668,60 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
             </a>
           )}
         </Section>
-        <Button size="lg" className="w-full h-14 text-base" onClick={() => checkInAssignment(assignment)}>
-          Check In
+        {!assignment.enRouteAt && (
+          <Button variant="secondary" className="w-full h-12" onClick={() => markEnRoute(assignment)}>
+            I'm on my way
+          </Button>
+        )}
+        <Button size="lg" className="w-full h-14 text-base" disabled={locBusy} onClick={handleArrive}>
+          {locBusy ? "Getting location…" : "I'm at Location"}
+        </Button>
+        {locError && (
+          <div className="rounded-md border border-warning/25 bg-warning-bg px-3 py-2 text-xs text-warning space-y-1.5">
+            <div>{locError}</div>
+            <button className="underline" onClick={handleArrive}>
+              Retry
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (stage === "arrived") {
+    const location = assignmentEvidence.filter((e) => e.type === "LOCATION").sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+    const verified = location?.metadata?.verified === true;
+    return (
+      <div className="p-4 space-y-4">
+        <Section title="LOCATION">
+          {location ? (
+            <div className={cn("rounded-lg border p-3 text-sm flex items-center gap-2", verified ? "border-success/30 bg-success-bg text-success" : "border-warning/30 bg-warning-bg text-warning")}>
+              {verified ? <CheckCircle2 className="size-4 shrink-0" /> : <AlertTriangle className="size-4 shrink-0" />}
+              <span>
+                {verified ? "LOCATION VERIFIED" : "LOCATION MISMATCH"} — {(location.metadata?.message as string) ?? "location recorded"}
+              </span>
+            </div>
+          ) : (
+            <div className="text-sm text-muted">Location captured.</div>
+          )}
+        </Section>
+        <Section title="ARRIVAL PHOTO">
+          <PhotoCapture label="Take arrival photo" files={arrivalPhotos} onChange={setArrivalPhotos} />
+        </Section>
+        <Button
+          size="lg"
+          className="w-full h-14 text-base"
+          disabled={arrivalPhotos.length === 0}
+          onClick={() => captureStepEvidence(assignment, "ARRIVAL", arrivalPhotos)}
+        >
+          Continue to Rig Precheck
         </Button>
       </div>
     );
   }
 
-  if (!session) {
+  if (stage === "location_verified" || stage === "precheck") {
+    const latestPrecheck = assignmentEvidence.filter((e) => e.type === "RIG_PRECHECK").sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
     if (rigSummary && !isDeployable(rigSummary.readiness)) {
       return (
         <div className="p-4 space-y-4">
@@ -533,25 +749,39 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
       );
     }
 
-    const items: { key: keyof typeof checklist; label: string }[] = [
-      { key: "confirmedBusiness", label: "Confirm business" },
-      { key: "scannedRig", label: "30-second rig preflight (power, cameras, cables, storage)" },
-      { key: "checkedBattery", label: "Check battery" },
-      { key: "checkedStorage", label: "Check storage" },
-      { key: "confirmedCollector", label: "Confirm collector" },
-      { key: "capturedEvidence", label: "Capture evidence" },
-    ];
-    const allDone = items.every((i) => checklist[i.key]);
+    if (latestPrecheck && latestPrecheck.metadata?.passed === false && latestPrecheck.status !== "rejected") {
+      const replacement = assignment.rigId ? proposeRigReplacement(data, assignment.date, assignment.rigId, assignment.plannedStart, assignment.plannedEnd) : null;
+      return (
+        <div className="p-4 space-y-4">
+          <div className="rounded-xl border border-critical/30 bg-critical-bg p-5 text-center space-y-2">
+            <ShieldAlert className="size-10 text-critical mx-auto" />
+            <div className="text-base font-bold text-critical">RIG PRECHECK FAILED</div>
+            <div className="text-sm text-critical/90">{rig?.code} — an issue has been reported to your Manager.</div>
+          </div>
+          {replacement && (
+            <div className="rounded-lg border border-info/30 bg-info-bg p-3 text-sm text-info">
+              AI recommendation: {replacement.rig.code} is ready ({replacement.reasons.join(", ")}). Your Manager will confirm a replacement.
+            </div>
+          )}
+          <div className="text-xs text-muted text-center">Execution is blocked until your Manager assigns a ready rig.</div>
+        </div>
+      );
+    }
+
+    const allCriticalDone = PRECHECK_ITEMS.filter((i) => i.critical).every((i) => precheckChecklist[i.key]);
     return (
       <div className="p-4 space-y-4">
-        <Section title="RIG PREFLIGHT">
+        <Section title={`RIG PRECHECK — ${rig?.code ?? "No rig"}`}>
           <div className="space-y-2.5">
-            {items.map((i) => (
+            {PRECHECK_ITEMS.map((i) => (
               <label key={i.key} className="flex items-center gap-3 py-1">
-                <Checkbox checked={checklist[i.key]} onCheckedChange={(v) => setChecklist((c) => ({ ...c, [i.key]: !!v }))} />
+                <Checkbox checked={!!precheckChecklist[i.key]} onCheckedChange={(v) => setPrecheckChecklist((c) => ({ ...c, [i.key]: !!v }))} />
                 <span className="text-sm">{i.label}</span>
               </label>
             ))}
+          </div>
+          <div className="flex flex-wrap gap-2 mt-3">
+            <PhotoCapture label="Rig photo" files={precheckPhotos} onChange={setPrecheckPhotos} />
           </div>
           {rig && (
             <button className="text-xs text-critical mt-3 flex items-center gap-1.5" onClick={() => setPreflightIssueOpen(true)}>
@@ -562,13 +792,9 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
         <Button
           size="lg"
           className="w-full h-14 text-base"
-          disabled={!allDone}
-          onClick={() => {
-            if (rig) logRigPreflightPassed(rig.id);
-            startSessionForAssignment(assignment, checklist);
-          }}
+          onClick={() => submitPrecheck(assignment, precheckChecklist, precheckPhotos, allCriticalDone ? undefined : "Precheck failed — see checklist.")}
         >
-          <PlayCircle className="size-5" /> Start Session
+          <ClipboardCheck className="size-5" /> Submit Precheck
         </Button>
         {rig && (
           <RigIncidentFormDialog
@@ -583,7 +809,110 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
     );
   }
 
-  if (session.status === "active") {
+  if (stage === "rig_ready") {
+    return (
+      <div className="p-4 space-y-4">
+        <div className="rounded-xl border border-success/30 bg-success-bg p-5 text-center space-y-1">
+          <CheckCircle2 className="size-8 text-success mx-auto" />
+          <div className="text-base font-bold text-success">RIG READY</div>
+          <div className="text-sm">{rig?.code} passed precheck.</div>
+        </div>
+        <Button size="lg" className="w-full h-14 text-base" onClick={() => startInstallation(assignment)}>
+          Start Installation
+        </Button>
+      </div>
+    );
+  }
+
+  if (stage === "installation") {
+    const allCriticalDone = INSTALLATION_ITEMS.filter((i) => i.critical).every((i) => installChecklist[i.key]);
+    const photosDone = installPhotos.length > 0 && cablePhotos.length > 0 && finalPhotos.length > 0;
+    return (
+      <div className="p-4 space-y-4">
+        <Section title="INSTALLATION">
+          <div className="space-y-2.5">
+            {INSTALLATION_ITEMS.map((i) => (
+              <label key={i.key} className="flex items-center gap-3 py-1">
+                <Checkbox checked={!!installChecklist[i.key]} onCheckedChange={(v) => setInstallChecklist((c) => ({ ...c, [i.key]: !!v }))} />
+                <span className="text-sm">{i.label}</span>
+              </label>
+            ))}
+          </div>
+          <div className="flex flex-col gap-2 mt-3">
+            <PhotoCapture label="Installation photo" files={installPhotos} onChange={setInstallPhotos} />
+            <PhotoCapture label="Cable routing photo" files={cablePhotos} onChange={setCablePhotos} />
+            <PhotoCapture label="Final setup photo" files={finalPhotos} onChange={setFinalPhotos} />
+          </div>
+        </Section>
+        <Button
+          size="lg"
+          className="w-full h-14 text-base"
+          disabled={!allCriticalDone || !photosDone}
+          onClick={() => {
+            captureStepEvidence(assignment, "INSTALLATION", installPhotos);
+            captureStepEvidence(assignment, "CABLE_SETUP", cablePhotos);
+            captureStepEvidence(assignment, "FINAL_SETUP", finalPhotos);
+          }}
+        >
+          Submit Installation
+        </Button>
+      </div>
+    );
+  }
+
+  if (stage === "installation_verified") {
+    const items = [
+      { key: "installed", label: "Rig installed correctly" },
+      { key: "positioned", label: "Camera/sensor positioned correctly" },
+      { key: "secured", label: "Cables secured" },
+      { key: "powered", label: "Power confirmed" },
+      { key: "complete", label: "Setup complete" },
+    ];
+    const allDone = items.every((i) => verifyChecklist[i.key]);
+    return (
+      <div className="p-4 space-y-4">
+        <Section title="INSTALLATION VERIFIED">
+          <div className="text-sm text-muted mb-2">Confirm before starting the session.</div>
+          <div className="space-y-2.5">
+            {items.map((i) => (
+              <label key={i.key} className="flex items-center gap-3 py-1">
+                <Checkbox checked={!!verifyChecklist[i.key]} onCheckedChange={(v) => setVerifyChecklist((c) => ({ ...c, [i.key]: !!v }))} />
+                <span className="text-sm">{i.label}</span>
+              </label>
+            ))}
+          </div>
+        </Section>
+        <Button
+          size="lg"
+          className="w-full h-14 text-base"
+          disabled={!allDone}
+          onClick={() => {
+            // Only unlocked here — arrival verified, precheck passed,
+            // installation completed, and installation evidence all
+            // already required to reach this stage (spec Phase 10).
+            completeInstallationVerification(assignment);
+            startSessionForAssignment(assignment);
+          }}
+        >
+          <PlayCircle className="size-5" /> Start Session
+        </Button>
+      </div>
+    );
+  }
+
+  if (stage === "session") {
+    // Defensive only — deriveExecutionStage only ever returns "session" when
+    // session?.status === "active", so this is unreachable in practice; kept
+    // so TypeScript can narrow `session` below without a non-null assertion.
+    if (!session) {
+      return (
+        <div className="p-4 space-y-4">
+          <div className="rounded-lg border border-border bg-surface-2/50 p-4 text-sm text-muted flex items-center gap-2">
+            <Lock className="size-4" /> Session locked — complete installation verification first.
+          </div>
+        </div>
+      );
+    }
     const elapsedSec = Math.max(0, Math.floor((Date.now() - new Date(session.startedAt).getTime()) / 1000));
     const h = String(Math.floor(elapsedSec / 3600)).padStart(2, "0");
     const m = String(Math.floor((elapsedSec % 3600) / 60)).padStart(2, "0");
@@ -621,6 +950,9 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
   }
 
   // session ended, assignment not yet marked completed (edge case) — show completion confirmation
+  if (!session) {
+    return <div className="p-8 text-center text-sm text-muted">In progress…</div>;
+  }
   return (
     <div className="p-4 space-y-4">
       <Section title="COMPLETE VISIT">

@@ -35,7 +35,7 @@ export const COLLECTION_NAMES: CollectionName[] = [
  * Field Officer subscribing to one of these MUST filter by their own foId
  * (see firebaseBackend.ts's subscribeCollection). Keep in sync with
  * firestore.rules if any of these grants change shape. */
-export const OWNERSHIP_SCOPED_FO_COLLECTIONS: CollectionName[] = ["assignments", "sessions", "issues", "rigIncidents"];
+export const OWNERSHIP_SCOPED_FO_COLLECTIONS: CollectionName[] = ["assignments", "sessions", "issues", "rigIncidents", "evidence"];
 
 export interface RemoteBackend {
   /** Subscribes to a collection. `cb` fires with the full current document

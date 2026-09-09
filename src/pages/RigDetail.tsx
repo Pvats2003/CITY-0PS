@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useParams, Link, Navigate } from "react-router-dom";
-import { ArrowLeft, Pencil, AlertTriangle, TrendingDown, Wrench, ShieldQuestion, ClipboardList, Archive, XCircle } from "lucide-react";
+import { ArrowLeft, Pencil, AlertTriangle, TrendingDown, Wrench, ShieldQuestion, ClipboardList, Archive, XCircle, ImageOff } from "lucide-react";
 import { useCity } from "@/store/city";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -122,6 +122,27 @@ export default function RigDetail() {
                   <div key={i} className="rounded-md border border-critical/20 bg-critical-bg p-3 text-sm">
                     <div className="font-medium text-critical">{p.message}</div>
                     <div className="text-xs text-muted mt-1">Recommendation: {p.recommendation}</div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          {summary.evidenceSignals.length > 0 && (
+            <Card className="border-warning/25">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-warning">
+                  <ImageOff className="size-4" /> Evidence Signals (AI QA — advisory)
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0 space-y-2">
+                {summary.evidenceSignals.map((s, i) => (
+                  <div key={i} className="rounded-md border border-warning/20 bg-warning-bg p-3 text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="font-medium text-warning">{s.message}</div>
+                      <span className="text-xs text-muted shrink-0">{s.confidence}% confidence</span>
+                    </div>
+                    <div className="text-xs text-muted mt-1">{s.recommendation}</div>
                   </div>
                 ))}
               </CardContent>

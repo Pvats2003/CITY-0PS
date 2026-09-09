@@ -15,6 +15,7 @@ import {
   ArrowRight,
   Cpu,
   ShieldCheck,
+  ClipboardCheck,
 } from "lucide-react";
 import { useCity } from "@/store/city";
 import { todayISO, fmtHours, fmtDate } from "@/lib/dates";
@@ -24,6 +25,7 @@ import { computeLostHours } from "@/engine/lostHours";
 import { buildTomorrowRecommendations } from "@/engine/reports";
 import { assignmentsForDate, recordedHoursForDate, activeSessions } from "@/engine/selectors";
 import { buildFleetReadiness, buildFleetRanking, computeRigLostHours } from "@/engine/rigGuardian";
+import { buildCityExecutionSummary, EXECUTION_STAGE_LABELS, type ExecutionStage } from "@/engine/execution";
 import { KpiCard } from "@/components/shared/KpiCard";
 import { ScoreBar } from "@/components/shared/ScoreBar";
 import { AttentionList } from "@/components/shared/AttentionList";
@@ -51,6 +53,7 @@ export default function CommandCenter() {
   const fleetReadiness = useMemo(() => buildFleetReadiness(data, date, fleetSummaries), [data, date, fleetSummaries]);
   const fleetLostHours = useMemo(() => computeRigLostHours(data, undefined, date), [data, date]);
   const riskyRigs = useMemo(() => fleetSummaries.filter((s) => s.readiness !== "healthy").slice(0, 4), [fleetSummaries]);
+  const execution = useMemo(() => buildCityExecutionSummary(data, date), [data, date]);
 
   const assignments = assignmentsForDate(data, date);
   const completed = assignments.filter((a) => a.status === "completed").length;
@@ -127,6 +130,52 @@ export default function CommandCenter() {
             tone={fleetReadiness.status === "ready" ? "success" : "critical"}
           />
         </div>
+
+        {/* Field Execution — spec Phase 21: evidence-driven execution visibility */}
+        {execution.total > 0 && (
+          <Card>
+            <CardHeader className="flex-row items-center justify-between space-y-0">
+              <CardTitle className="flex items-center gap-2">
+                <ClipboardCheck className="size-4" /> Field Execution Today
+              </CardTitle>
+              <Button asChild size="sm" variant="ghost">
+                <Link to="/field-officers">
+                  View field officers <ArrowRight className="size-3.5" />
+                </Link>
+              </Button>
+            </CardHeader>
+            <CardContent className="pt-0 space-y-4">
+              <div className="flex flex-wrap gap-2">
+                {(Object.entries(execution.byStage) as [ExecutionStage, number][])
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([stage, count]) => (
+                    <div key={stage} className="rounded-md bg-surface-2 px-2.5 py-1.5 text-xs">
+                      <span className="font-semibold tabular-nums">{count}</span>{" "}
+                      <span className="text-muted">{EXECUTION_STAGE_LABELS[stage]}</span>
+                    </div>
+                  ))}
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-md bg-surface-2 px-3 py-2">
+                  <div className="text-[11px] text-muted">Evidence complete</div>
+                  <div className="text-base font-semibold tabular-nums">{execution.evidenceCompletePct}%</div>
+                </div>
+                <div className="rounded-md bg-surface-2 px-3 py-2">
+                  <div className="text-[11px] text-muted">Location mismatches</div>
+                  <div className={`text-base font-semibold tabular-nums ${execution.locationMismatches > 0 ? "text-warning" : ""}`}>
+                    {execution.locationMismatches}
+                  </div>
+                </div>
+                <div className="rounded-md bg-surface-2 px-3 py-2">
+                  <div className="text-[11px] text-muted">Precheck failures</div>
+                  <div className={`text-base font-semibold tabular-nums ${execution.precheckFailures > 0 ? "text-critical" : ""}`}>
+                    {execution.precheckFailures}
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
           {/* Attention panel */}

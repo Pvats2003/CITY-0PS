@@ -2,6 +2,7 @@ import type { CityData, DamageGroup, Rig, RigIncident, RigReadinessStatus, Sever
 import { todayISO } from "@/lib/dates";
 import { overlaps } from "./selectors";
 import { DAMAGE_GROUP_LABELS, categoryLabel } from "./rigTaxonomy";
+import { recentEvidenceSignalsForRig, type RigEvidenceSignal } from "./execution";
 
 // ---------------------------------------------------------------------------
 // Rig Guardian — deterministic, explainable rig health & readiness engine.
@@ -322,6 +323,11 @@ export interface RigSummary {
   hoursSinceInspection: number;
   inspection: InspectionCheck;
   repeatedFailures: FailurePattern[];
+  /** Advisory-only AI QA findings from recent evidence captured on this rig
+   * (spec Phase 22) — never factored into `score`; a real safety event
+   * already reaches the score via reportRigIncident on precheck failure.
+   * This is a softer, separate signal for the Manager to notice a pattern. */
+  evidenceSignals: RigEvidenceSignal[];
 }
 
 export function buildRigSummary(data: CityData, rig: Rig): RigSummary {
@@ -358,6 +364,7 @@ export function buildRigSummary(data: CityData, rig: Rig): RigSummary {
     hoursSinceInspection,
     inspection: needsInspection(data, rig),
     repeatedFailures: detectRepeatedFailures(data, rig),
+    evidenceSignals: recentEvidenceSignalsForRig(data, rig.id),
   };
 }
 

@@ -69,11 +69,13 @@ export default function SessionDetail() {
       updateEvidence(evidence.id, { files: [...evidence.files, ...items] });
     } else {
       addEvidence({
+        assignmentId: session.assignmentId,
         sessionId: session.id,
         businessId: session.businessId,
         foId: session.foId,
         collectorId: session.collectorId,
         rigId: session.rigId,
+        type: "OTHER",
         startedAt: session.startedAt,
         endedAt: session.endedAt,
         files: items,
@@ -87,11 +89,13 @@ export default function SessionDetail() {
     if (evidence) updateEvidence(evidence.id, { notes });
     else
       addEvidence({
+        assignmentId: session.assignmentId,
         sessionId: session.id,
         businessId: session.businessId,
         foId: session.foId,
         collectorId: session.collectorId,
         rigId: session.rigId,
+        type: "OTHER",
         startedAt: session.startedAt,
         endedAt: session.endedAt,
         files: [],

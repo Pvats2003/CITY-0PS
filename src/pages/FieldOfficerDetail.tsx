@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useParams, Link, Navigate } from "react-router-dom";
-import { ArrowLeft, Pencil, Smartphone, Lightbulb, CheckCircle2, Circle, PlayCircle, PlusCircle, XCircle } from "lucide-react";
+import { ArrowLeft, Pencil, Smartphone, Lightbulb, CheckCircle2, Circle, PlayCircle, PlusCircle, XCircle, ClipboardCheck } from "lucide-react";
 import { useCity } from "@/store/city";
 import { computeFOStats, foInsightText } from "@/engine/insights";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,6 +9,7 @@ import { StatusBadge } from "@/components/status";
 import { ActivityTimeline } from "@/components/shared/ActivityTimeline";
 import { FOFormDialog } from "@/components/forms/FOFormDialog";
 import { AssignmentFormDialog } from "@/components/forms/AssignmentFormDialog";
+import { EvidenceReviewDialog } from "@/components/forms/EvidenceReviewDialog";
 import { fmtTime, fmtHours, todayISO } from "@/lib/dates";
 import { assignmentStatusToStatus } from "@/engine/todayView";
 
@@ -19,6 +20,7 @@ export default function FieldOfficerDetail() {
   const updateAssignment = useCity((s) => s.updateAssignment);
   const [editOpen, setEditOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
+  const [reviewAssignmentId, setReviewAssignmentId] = useState<string | null>(null);
   const fo = data.fos.find((f) => f.id === id);
   const date = todayISO();
 
@@ -121,6 +123,7 @@ export default function FieldOfficerDetail() {
                 const Icon = a.status === "completed" ? CheckCircle2 : a.status === "in_progress" ? PlayCircle : Circle;
                 const rig = a.rigId ? rigMap.get(a.rigId) : undefined;
                 const removable = a.status === "planned" || a.status === "confirmed";
+                const hasEvidence = a.actualArrivalAt || data.evidence.some((e) => e.assignmentId === a.id);
                 return (
                   <div key={a.id} className="flex items-center gap-2.5 rounded-md border border-border px-3 py-2.5">
                     <Icon className={`size-4 shrink-0 ${a.status === "completed" ? "text-success" : a.status === "in_progress" ? "text-info" : "text-muted-2"}`} />
@@ -132,6 +135,11 @@ export default function FieldOfficerDetail() {
                       </div>
                     </div>
                     <StatusBadge status={status} />
+                    {hasEvidence && (
+                      <Button size="icon-sm" variant="ghost" title="Review evidence" onClick={() => setReviewAssignmentId(a.id)}>
+                        <ClipboardCheck className="size-4" />
+                      </Button>
+                    )}
                     {removable && (
                       <Button
                         size="icon-sm"
@@ -161,6 +169,7 @@ export default function FieldOfficerDetail() {
           onCreate={(a) => addAssignment({ ...a, status: "confirmed" })}
         />
       )}
+      <EvidenceReviewDialog open={reviewAssignmentId != null} onOpenChange={(v) => !v && setReviewAssignmentId(null)} assignmentId={reviewAssignmentId} />
     </div>
   );
 }

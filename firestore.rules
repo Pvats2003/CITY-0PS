@@ -73,5 +73,14 @@ service cloud.firestore {
       allow read: if isFieldOfficer();
       allow create: if isFieldOfficer();
     }
+    // Evidence is append-only from the FO's side: they can read and submit
+    // their own records (including resubmissions after a recheck request —
+    // always a new document, never an edit of the original), but only the
+    // Manager may set status (approved/rejected/recheck_requested) — no FO
+    // update or delete grant here, matching the append-only history design.
+    match /evidence/{docId} {
+      allow read: if isFieldOfficer() && resource.data.foId == myFoId();
+      allow create: if isFieldOfficer() && request.resource.data.foId == myFoId();
+    }
   }
 }

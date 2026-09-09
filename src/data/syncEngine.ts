@@ -16,7 +16,7 @@ import type { CityStore } from "@/store/city";
  * with an expected denial, masking whether collections the FO IS granted
  * (like fos) are actually working. Keep in sync with firestore.rules if
  * that file's FO grants ever change. */
-const FIELD_OFFICER_COLLECTIONS: CollectionName[] = ["fos", "businesses", "rigs", "assignments", "sessions", "issues", "rigIncidents", "activity"];
+const FIELD_OFFICER_COLLECTIONS: CollectionName[] = ["fos", "businesses", "rigs", "assignments", "sessions", "issues", "rigIncidents", "activity", "evidence"];
 
 function collectionsForRole(role: UserRole | null): CollectionName[] {
   // null (role unresolved — demo mode, or the profile read failed) falls

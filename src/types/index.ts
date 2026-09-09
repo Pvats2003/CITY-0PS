@@ -229,6 +229,14 @@ export type AssignmentStatus =
   | "cancelled"
   | "no_show";
 
+/** A Manager decision, set only via reviewAssignment() in
+ * engine/workflows.ts — never inferred, never set by AI QA. "pending" is
+ * the default (including for every assignment that predates this field).
+ * See engine/execution.ts's deriveExecutionStage: READY_FOR_REVIEW is a
+ * derived stage (evidence complete, session ended), but the final
+ * APPROVED/RECHECK_REQUIRED transition is this field, a real Manager act. */
+export type AssignmentReviewStatus = "pending" | "approved" | "recheck_requested";
+
 export interface Assignment {
   id: string;
   date: string; // ISO date "yyyy-MM-dd"
@@ -247,6 +255,17 @@ export interface Assignment {
   planId?: string;
   notes?: string;
   travelBufferMin?: number;
+  /** FO tapped "I'm on my way" — purely informational (Command Center
+   * status, activity trail); does not gate anything downstream. */
+  enRouteAt?: string;
+  /** Set once the FO taps "Start Installation" (only unlocked after a
+   * passing RIG_PRECHECK evidence exists) — see Phase 8/10 of the
+   * evidence-driven execution flow. */
+  installationStartedAt?: string;
+  reviewStatus?: AssignmentReviewStatus;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  reviewNote?: string;
   createdAt: string;
 }
 
@@ -300,20 +319,74 @@ export interface EvidenceFile {
   capturedAt: string;
 }
 
+/** What step of execution this evidence record proves. ARRIVAL/LOCATION/
+ * RIG_PRECHECK/INSTALLATION/CABLE_SETUP/FINAL_SETUP happen before a Session
+ * exists (see engine/execution.ts's deriveExecutionStage) — sessionId is
+ * only ever set once one does. RIG_DAMAGE accompanies a precheck failure
+ * (see reportRigIncident in engine/workflows.ts). OTHER preserves the
+ * pre-existing SessionDetail.tsx manager-upload behavior unchanged. */
+export type EvidenceType =
+  | "ARRIVAL"
+  | "LOCATION"
+  | "RIG_PRECHECK"
+  | "RIG_DAMAGE"
+  | "INSTALLATION"
+  | "CABLE_SETUP"
+  | "FINAL_SETUP"
+  | "SESSION_START"
+  | "SESSION_END"
+  | "ISSUE"
+  | "OTHER";
+
+/** pending/submitted/verified are the pre-existing states (unchanged
+ * meaning). approved/rejected/recheck_requested are set ONLY by a Manager
+ * (never by the FO, never automatically) — see requestRecheck/reviewEvidence
+ * in engine/workflows.ts. A rejected or recheck_requested record is never
+ * deleted or overwritten: the FO's replacement is a NEW Evidence record of
+ * the same type+assignmentId (append-only history — see Phase 15). */
+export type EvidenceStatus = "pending" | "submitted" | "verified" | "approved" | "rejected" | "recheck_requested";
+
 export interface Evidence {
   id: string;
-  sessionId: string;
+  /** Optional only for pre-existing records created before this field
+   * existed (none in this codebase's demo data, but real deployed data
+   * could predate it) — every new Evidence record sets it. */
+  assignmentId?: string;
+  sessionId?: string;
   businessId: string;
   foId: string;
   collectorId?: string;
   rigId?: string;
+  type: EvidenceType;
   startedAt: string;
   endedAt?: string;
+  capturedAt?: string;
   lat?: number;
   lng?: number;
+  /** GPS accuracy radius in meters, as reported by the device. */
+  locationAccuracy?: number;
+  /** Only set on type "LOCATION" — the haversine distance between this
+   * capture and the business's own recorded coordinates. See
+   * engine/execution.ts's LOCATION_MATCH_THRESHOLD_METERS for the
+   * deterministic verified/mismatch cutoff. */
+  distanceFromExpectedMeters?: number;
   files: EvidenceFile[];
   notes?: string;
-  status: "pending" | "submitted" | "verified";
+  /** Free-form, type-specific facts (e.g. which precheck items passed) —
+   * never used for anything security- or logic-critical, purely descriptive. */
+  metadata?: Record<string, unknown>;
+  /** Set when this record is the FO's replacement submission after a
+   * Manager's recheck request — the earlier record is never deleted or
+   * overwritten (append-only history, spec Phase 15); this just makes the
+   * "Evidence #1 -> Evidence #2" relationship explicit rather than
+   * implicit-by-matching-type. */
+  replacesEvidenceId?: string;
+  status: EvidenceStatus;
+  /** Set only by a Manager action (approve/reject/request recheck) —
+   * never by the FO or by AI QA. */
+  reviewedBy?: string;
+  reviewedAt?: string;
+  reviewNote?: string;
   createdAt: string;
 }
 
@@ -430,7 +503,19 @@ export type ActivityEventType =
   | "rig_inspection_completed"
   | "rig_inspection_requested"
   | "rig_retired"
-  | "rig_status_override";
+  | "rig_status_override"
+  | "en_route"
+  | "location_verified"
+  | "precheck_started"
+  | "precheck_passed"
+  | "precheck_failed"
+  | "installation_started"
+  | "installation_completed"
+  | "installation_verified"
+  | "evidence_rejected"
+  | "recheck_requested"
+  | "evidence_replaced"
+  | "assignment_completed";
 
 export interface ActivityEvent {
   id: string;

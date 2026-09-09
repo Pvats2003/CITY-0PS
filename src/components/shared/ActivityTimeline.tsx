@@ -59,6 +59,18 @@ const ICONS: Record<ActivityEventType, React.ComponentType<{ className?: string 
   rig_inspection_requested: ClipboardList,
   rig_retired: Archive,
   rig_status_override: SlidersHorizontal,
+  en_route: UserCheck,
+  location_verified: ScanLine,
+  precheck_started: ClipboardList,
+  precheck_passed: ClipboardCheck,
+  precheck_failed: ShieldX,
+  installation_started: PlayCircle,
+  installation_completed: ClipboardCheck,
+  installation_verified: ShieldCheck,
+  evidence_rejected: ShieldX,
+  recheck_requested: AlertTriangle,
+  evidence_replaced: ImagePlus,
+  assignment_completed: CheckCircle2,
 };
 
 const COLOR: Record<ActivityEventType, string> = {
@@ -93,6 +105,18 @@ const COLOR: Record<ActivityEventType, string> = {
   rig_inspection_requested: "text-warning",
   rig_retired: "text-muted",
   rig_status_override: "text-warning",
+  en_route: "text-muted",
+  location_verified: "text-success",
+  precheck_started: "text-muted",
+  precheck_passed: "text-success",
+  precheck_failed: "text-critical",
+  installation_started: "text-primary",
+  installation_completed: "text-success",
+  installation_verified: "text-success",
+  evidence_rejected: "text-critical",
+  recheck_requested: "text-warning",
+  evidence_replaced: "text-muted",
+  assignment_completed: "text-success",
 };
 
 export function ActivityTimeline({
