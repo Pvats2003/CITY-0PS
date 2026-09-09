@@ -23,9 +23,26 @@ const ACTIVITY_LISTEN_LIMIT = 500;
  * standard, cost-efficient listen pattern. */
 export const firebaseBackend: RemoteBackend = {
   subscribeCollection(name: CollectionName, cb) {
-    const db = getFirestore(getFirebaseApp());
+    const app = getFirebaseApp();
+    const db = getFirestore(app);
     const ref =
       name === "activity" ? query(collection(db, name), orderBy("at", "desc"), limit(ACTIVITY_LISTEN_LIMIT)) : collection(db, name);
+
+    // TEMPORARY production diagnostic — logs the EXACT Firestore operation,
+    // path, and project this client is issuing, at the moment it's issued
+    // (not inferred). Answers "is this a getDoc/getDocs/onSnapshot(collection)
+    // /onSnapshot(query)" and "which project/database" directly, since a
+    // wrong-project env var or a listener/query mismatch would otherwise be
+    // invisible from application code alone. Safe to delete once resolved.
+    if (name === "fos") {
+      console.info("[CITY-OPS-DIAG] subscribing fos", {
+        operation: "onSnapshot(collection(db, 'fos'))",
+        path: "/fos",
+        projectId: app.options.projectId,
+        authDomain: app.options.authDomain,
+      });
+    }
+
     return onSnapshot(
       ref,
       (snap) => {
@@ -50,6 +67,14 @@ export const firebaseBackend: RemoteBackend = {
         // empty with no visible sign anything was wrong (the "blank UI from
         // an unhandled permission-denied error" failure mode). Route it into
         // the same SYNC ERROR surface as write failures instead.
+        if (name === "fos") {
+          console.info("[CITY-OPS-DIAG] fos listener error", {
+            path: "/fos",
+            code: (err as { code?: string }).code,
+            message: err.message,
+            projectId: app.options.projectId,
+          });
+        }
         reportSyncError(describeError(err));
       },
     );
