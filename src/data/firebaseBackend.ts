@@ -1,7 +1,7 @@
 import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc as fsDeleteDoc, query, orderBy, limit } from "firebase/firestore";
 import { getFirebaseApp } from "@/auth/firebaseApp";
 import { reportSyncError, describeError } from "./outbox";
-import { setFosDiagSnapshot } from "./fosDiag";
+import { setFosDiagSnapshot, getFosDiagSnapshot } from "./fosDiag";
 import type { CollectionName, RemoteBackend } from "./backend";
 
 /** The activity log is the one unbounded, high-write-frequency collection
@@ -60,6 +60,20 @@ export const firebaseBackend: RemoteBackend = {
             return { docId: d.id, dataId, dataIdType: typeof dataId, name: data.name };
           });
           setFosDiagSnapshot(records);
+          // onSnapshot fires again on every remote change, not just once —
+          // this line answers "how many times, and did a LATER snapshot
+          // silently replace an earlier, correct one" (hypothesis E),
+          // which a single "current state" log can never show on its own.
+          const diag = getFosDiagSnapshot();
+          console.log(
+            "[CITY-OPS-DIAG] FOS_SNAPSHOT",
+            "snapshotNumber=" + (diag?.snapshotNumber ?? -1),
+            "timestamp=" + new Date(diag?.capturedAt ?? Date.now()).toISOString(),
+            "documentCount=" + records.length,
+            "docIds=" + JSON.stringify(records.map((r) => r.docId)),
+            "dataIds=" + JSON.stringify(records.map((r) => r.dataId)),
+            "names=" + JSON.stringify(records.map((r) => r.name)),
+          );
         }
         cb(snap.docs.map((d) => d.data() as never));
       },

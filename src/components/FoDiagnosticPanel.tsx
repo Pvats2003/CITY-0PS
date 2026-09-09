@@ -110,6 +110,17 @@ export function FoDiagnosticPanel({ requestedFoId, matchedFoId, matchedFoName, f
   const foIdType = typeof rawFoId;
   const foIdLength = typeof rawFoId === "string" ? rawFoId.length : -1;
 
+  // The `requestedFoId` PROP (what FOExecution.tsx actually compares fos
+  // records against — `id = params.id ?? user?.foId`) computed and shown
+  // separately from `rawFoId` above (the profile's own raw field) rather
+  // than assumed identical, per the requirement to prove equality, not
+  // infer it — they are the same value on the FO's own /fo login in
+  // practice, but the panel never assumes that silently.
+  const requestedFoIdType = typeof requestedFoId;
+  const requestedFoIdStr = typeof requestedFoId === "string" ? requestedFoId : null;
+  const requestedFoIdLength = requestedFoIdStr !== null ? requestedFoIdStr.length : -1;
+  const requestedFoIdSuspicious = requestedFoIdStr !== null && isSuspiciousString(requestedFoIdStr);
+
   const syncErrorText = fosSync.error ? `fos: ${fosSync.error}` : "NONE";
 
   const copyLines = [
@@ -124,21 +135,34 @@ export function FoDiagnosticPanel({ requestedFoId, matchedFoId, matchedFoName, f
     `FO_ID=${displayValue(rawFoId)}`,
     `FO_ID_TYPE=${foIdType}`,
     `FO_ID_LENGTH=${foIdLength}`,
+    `REQUESTED_FOID=${displayValue(requestedFoId ?? null)}`,
+    `REQUESTED_FOID_TYPE=${requestedFoIdType}`,
+    `REQUESTED_FOID_LENGTH=${requestedFoIdLength}`,
+    `REQUESTED_FOID_CHARS=${requestedFoIdStr !== null ? charCodesOf(requestedFoIdStr) : "N/A"}`,
     `FOS_SYNC=${fosSync.status}`,
     `FOS_COUNT=${fosCount}`,
     `MATCHED_FO_ID=${matchedFoId ?? "NONE"}`,
     `MATCHED_FO_NAME=${matchedFoName ?? "NONE"}`,
     `CURRENT_SCREEN=${screen}`,
     `SYNC_ERROR=${syncErrorText}`,
-    `FOS_CANDIDATES=${JSON.stringify(
-      candidates.map((c) => ({
-        docId: c.docId,
-        dataId: c.dataId,
-        dataIdType: c.dataIdType,
-        name: c.name,
-        exactMatch: c.dataId === rawFoId,
-      })),
-    )}`,
+    `SNAPSHOT_COUNT=${fosDiag?.snapshotNumber ?? "N/A"}`,
+    `LATEST_SNAPSHOT=${fosDiag ? new Date(fosDiag.capturedAt).toISOString() : "N/A"}`,
+    ...candidates.map((c, i) => {
+      const dataIdStr = typeof c.dataId === "string" ? c.dataId : null;
+      const reqStr = typeof rawFoId === "string" ? rawFoId : null;
+      const exactMatch = c.dataId === rawFoId;
+      const trimMatch = dataIdStr !== null && reqStr !== null && dataIdStr.trim() === reqStr.trim();
+      return (
+        `CANDIDATE_${i + 1}_FIRESTORE_DOC_ID=${c.docId}\n` +
+        `CANDIDATE_${i + 1}_DATA_ID=${displayValue(c.dataId)}\n` +
+        `CANDIDATE_${i + 1}_DATA_ID_TYPE=${c.dataIdType}\n` +
+        `CANDIDATE_${i + 1}_DATA_ID_LENGTH=${dataIdStr !== null ? dataIdStr.length : -1}\n` +
+        `CANDIDATE_${i + 1}_DATA_ID_CHARS=${dataIdStr !== null ? charCodesOf(dataIdStr) : "N/A"}\n` +
+        `CANDIDATE_${i + 1}_NAME=${displayValue(c.name)}\n` +
+        `CANDIDATE_${i + 1}_EXACT_MATCH=${exactMatch ? "YES" : "NO"}\n` +
+        `CANDIDATE_${i + 1}_TRIM_MATCH=${trimMatch ? "YES" : "NO"}`
+      );
+    }),
   ];
 
   async function handleCopy() {
@@ -189,25 +213,36 @@ export function FoDiagnosticPanel({ requestedFoId, matchedFoId, matchedFoName, f
       <Row label="Fos synced" value={String(fosSync.hasSyncedOnce)} />
       <Row label="Fos count" value={String(fosCount)} />
       <Row label="Requested foId" value={displayValue(requestedFoId ?? null)} />
+      <Row label="Requested foId type" value={requestedFoIdType} />
+      <Row label="Requested foId length" value={String(requestedFoIdLength)} />
+      {requestedFoIdSuspicious && requestedFoIdStr !== null && (
+        <Row label="Requested foId chars" value={charCodesOf(requestedFoIdStr)} />
+      )}
       <Row label="Matched FO id" value={matchedFoId ?? "NONE"} />
       <Row label="Matched FO name" value={matchedFoName ?? "NONE"} />
+
+      <div className="h-px bg-border my-1.5" />
+      <Row label="Fos snapshot #" value={fosDiag ? String(fosDiag.snapshotNumber) : "N/A (no snapshot captured yet)"} />
+      <Row label="Fos snapshot time" value={fosDiag ? new Date(fosDiag.capturedAt).toISOString() : "N/A"} />
 
       {candidates.length > 0 && (
         <>
           <div className="h-px bg-border my-1.5" />
-          <div className="text-[10px] uppercase tracking-wide text-muted-2 mb-1">FO candidates (raw Firestore snapshot)</div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-2 mb-1">
+            FO candidates (latest raw Firestore snapshot, #{fosDiag?.snapshotNumber ?? "?"})
+          </div>
           {candidates.map((c, i) => {
             const dataIdStr = typeof c.dataId === "string" ? c.dataId : null;
             const reqStr = typeof rawFoId === "string" ? rawFoId : null;
             const exactMatch = c.dataId === rawFoId;
             const trimMatch = dataIdStr !== null && reqStr !== null && dataIdStr.trim() === reqStr.trim();
-            const candidateSuspicious = dataIdStr !== null && isSuspiciousString(dataIdStr);
             return (
               <div key={c.docId + i} className="mb-1.5 pl-2 border-l-2 border-border">
                 <Row label={`#${i} Firestore doc ID`} value={c.docId} />
                 <Row label={`#${i} data.id`} value={displayValue(c.dataId)} />
                 <Row label={`#${i} data.id type`} value={c.dataIdType} />
-                {candidateSuspicious && dataIdStr !== null && <Row label={`#${i} data.id chars`} value={charCodesOf(dataIdStr)} />}
+                <Row label={`#${i} data.id length`} value={String(dataIdStr !== null ? dataIdStr.length : -1)} />
+                <Row label={`#${i} data.id chars`} value={dataIdStr !== null ? charCodesOf(dataIdStr) : "N/A (not a string)"} />
                 <Row label={`#${i} name`} value={displayValue(c.name)} />
                 <Row label={`#${i} exact match`} value={exactMatch ? "YES" : "NO"} />
                 <Row label={`#${i} trim match`} value={trimMatch ? "YES" : "NO"} />

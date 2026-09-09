@@ -19,13 +19,23 @@ export interface FosDiagRecord {
 export interface FosDiagSnapshot {
   records: FosDiagRecord[];
   capturedAt: number;
+  /** 1-indexed count of how many `fos` snapshots have arrived this page
+   * load (onSnapshot fires again on every remote change, not just once) —
+   * lets the panel/report distinguish "only ever got one snapshot" from "a
+   * later snapshot silently replaced an earlier, correct one" (hypothesis
+   * E) without needing console access to see the history. The panel only
+   * ever shows the latest snapshot's records; this number is what proves
+   * whether "latest" and "only" are the same thing right now. */
+  snapshotNumber: number;
 }
 
 const CHANGE_EVENT = "city-ops-fos-diag-change";
 let lastSnapshot: FosDiagSnapshot | null = null;
+let snapshotCounter = 0;
 
 export function setFosDiagSnapshot(records: FosDiagRecord[]): void {
-  lastSnapshot = { records, capturedAt: Date.now() };
+  snapshotCounter += 1;
+  lastSnapshot = { records, capturedAt: Date.now(), snapshotNumber: snapshotCounter };
   window.dispatchEvent(new CustomEvent(CHANGE_EVENT));
 }
 
