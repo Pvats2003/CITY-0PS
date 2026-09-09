@@ -66,12 +66,18 @@ export default function FOExecution() {
   if (!fo) {
     // Manager preview of a specific FO that no longer exists.
     if (params.id) return <Navigate to="/field-officers" replace />;
-    // Logged-in FO whose record isn't in the currently loaded city data.
+    // Logged-in FO whose users/{uid} doc doesn't resolve to a real
+    // FieldOfficer record — either foId was never set, or it was set to an
+    // id that doesn't match anyone in the loaded city. Distinct messages so
+    // whoever provisioned the account knows exactly what to fix.
+    const reason = !user?.foId
+      ? "Your account's users/{uid} profile doesn't have a foId set."
+      : `Your account's foId ("${user.foId}") doesn't match any field officer in this city.`;
     return (
       <div className="min-h-dvh flex flex-col items-center justify-center gap-3 bg-background text-foreground max-w-md mx-auto border-x border-border p-6 text-center">
         <UserRound className="size-10 text-muted" />
-        <div className="text-base font-semibold">No field officer profile found</div>
-        <p className="text-sm text-muted">Your account isn't linked to an active field officer in this city yet. Ask your manager to check your assignment.</p>
+        <div className="text-base font-semibold">Field Officer profile not configured</div>
+        <p className="text-sm text-muted">{reason} Ask your administrator to check it in Firestore, or your manager to confirm your assignment.</p>
         <Button variant="secondary" onClick={() => logout()}>
           <LogOut className="size-4" /> Sign out
         </Button>

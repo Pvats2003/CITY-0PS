@@ -22,7 +22,17 @@ export function RequireRole({ role, children }: { role: UserRole; children: Reac
     return <Navigate to={loginPath} replace />;
   }
   if (user.role !== role) {
-    return <Navigate to={user.role === "MANAGER" ? "/" : "/fo"} replace />;
+    // A known role that just isn't this one goes to its own portal. An
+    // unrecognized role (missing/typo'd in the users/{uid} doc) must NOT
+    // fall into the "/ : /fo" guess below — that guess is exactly what
+    // sent it here in the first place, so repeating it would bounce this
+    // user between the two guarded roots forever. Sending it back to the
+    // matching login page instead breaks the loop: Login.tsx and
+    // FOLogin.tsx both now recognize an invalid role and explain it
+    // clearly rather than redirecting into a guarded route again.
+    if (user.role === "MANAGER") return <Navigate to="/" replace />;
+    if (user.role === "FIELD_OFFICER") return <Navigate to="/fo" replace />;
+    return <Navigate to={loginPath} replace />;
   }
   return <>{children}</>;
 }

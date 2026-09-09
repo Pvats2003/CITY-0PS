@@ -1,7 +1,19 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { isFirebaseConfigured } from "./config";
 import { demoAuthProvider, loginDemo as demoLoginDemo } from "./demoAuth";
-import type { AppUser, AuthResult, AuthStatus, UserRole } from "./types";
+import type { AppUser, AuthProvider, AuthResult, AuthStatus, UserRole } from "./types";
+
+declare global {
+  interface Window {
+    /** Test-only seam (mirrors __CITY_OPS_TEST_BACKEND__ in syncEngine.ts).
+     * When set before AuthProviderRoot mounts, it's used in place of the
+     * real demo/Firebase choice — lets Playwright exercise auth states
+     * (invalid role, missing profile, error) that require a real or
+     * mocked identity provider, since there's no way to exercise a live
+     * Firebase project in this environment. Inert for real users. */
+    __CITY_OPS_TEST_AUTH_PROVIDER__?: AuthProvider;
+  }
+}
 
 interface PendingSetup {
   email: string;
@@ -37,6 +49,7 @@ export function AuthProviderRoot({ children }: { children: ReactNode }) {
   // firebaseAuthProvider pulls in the Firebase SDK — only import it when a
   // real backend is actually configured, so demo mode stays network-free.
   const provider = useMemo(() => {
+    if (window.__CITY_OPS_TEST_AUTH_PROVIDER__) return window.__CITY_OPS_TEST_AUTH_PROVIDER__;
     if (isDemoMode) return demoAuthProvider;
     return null; // resolved async below
   }, [isDemoMode]);

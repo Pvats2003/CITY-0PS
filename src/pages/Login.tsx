@@ -16,9 +16,20 @@ export default function Login() {
 
   // Permissive by design: whoever signs in here lands in their own portal —
   // a Field Officer account is routed to /fo, not blocked. Only /fo/login
-  // blocks the other direction (see FOLogin.tsx).
+  // blocks the other direction (see FOLogin.tsx). An account whose role is
+  // neither known value (missing/typo'd in its users/{uid} doc) is not
+  // guessed into either portal — that would otherwise bounce forever
+  // against RequireRole's own mismatch redirect — it gets a clear message
+  // and a way out instead.
   if (status === "authed" && user) {
-    return <Navigate to={user.role === "MANAGER" ? "/" : "/fo"} replace />;
+    if (user.role === "MANAGER") return <Navigate to="/" replace />;
+    if (user.role === "FIELD_OFFICER") return <Navigate to="/fo" replace />;
+    return (
+      <AuthErrorPanel
+        message="Your account isn't configured with a valid role. Contact your administrator to check your users/{uid} profile in Firestore."
+        onSignOut={() => logout()}
+      />
+    );
   }
 
   if (status === "needs_setup" && pendingSetup) {

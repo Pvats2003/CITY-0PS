@@ -22,13 +22,22 @@ export default function FOLogin() {
     return <Navigate to="/fo" replace />;
   }
 
-  // A Manager account authenticating here is a mistake, not a redirect —
-  // this portal is Field-Officer-only, so say so clearly instead of
-  // silently dropping them into either app.
-  if (status === "authed" && user?.role === "MANAGER") {
+  // Any authenticated account whose role isn't FIELD_OFFICER is a mistake,
+  // not a silent redirect — this portal is Field-Officer-only. Covers both
+  // the expected case (a Manager account) and an unexpected one (a
+  // users/{uid} doc whose role field is missing, blank, or doesn't match
+  // either known value — e.g. mistyped in the Firebase console) — either
+  // way, say so clearly instead of leaving the sign-in form to silently do
+  // nothing when status flips to "authed" but no branch below matches.
+  if (status === "authed" && user && user.role !== "FIELD_OFFICER") {
+    const isManager = user.role === "MANAGER";
     return (
       <WrongPortalPanel
-        message="This account is a Manager account. Please use Manager sign in."
+        message={
+          isManager
+            ? "This account is a Manager account. Please use Manager sign in."
+            : "This account is not configured as a Field Officer. Contact your administrator to check its role in Firestore."
+        }
         otherPortalLabel="Go to Manager sign in"
         otherPortalHref="/login"
         onSignOut={() => logout()}
