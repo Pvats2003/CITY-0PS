@@ -1,7 +1,7 @@
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from "firebase/auth";
 import { getFirestore, doc, getDoc } from "firebase/firestore";
 import { getFirebaseApp } from "./firebaseApp";
-import type { AppUser, AuthProvider, UserRole } from "./types";
+import type { AppUser, AuthEvent, AuthProvider, UserRole } from "./types";
 
 interface UserDoc {
   role: UserRole;
@@ -12,7 +12,12 @@ interface UserDoc {
 
 /** Role/foId live in a `users/{uid}` Firestore doc, not in Firebase Auth
  * itself (custom claims need a privileged admin SDK we don't run here).
- * Provision that doc when you create the account — see DEPLOYMENT.md. */
+ * Provision that doc when you create the account — see DEPLOYMENT.md.
+ *
+ * Returns `null` only when the doc genuinely doesn't exist (the normal,
+ * expected "not provisioned yet" case) — a real read failure (permission
+ * denied, offline, rules not deployed) is left to throw so the caller can
+ * tell the two apart instead of collapsing both into "signed out". */
 async function loadAppUser(fbUser: User): Promise<AppUser | null> {
   const db = getFirestore(getFirebaseApp());
   const snap = await getDoc(doc(db, "users", fbUser.uid));
@@ -33,12 +38,19 @@ export const firebaseAuthProvider: AuthProvider = {
     const auth = getAuth(getFirebaseApp());
     return onAuthStateChanged(auth, (fbUser) => {
       if (!fbUser) {
-        cb(null);
+        cb({ kind: "signed_out" });
         return;
       }
       loadAppUser(fbUser)
-        .then(cb)
-        .catch(() => cb(null));
+        .then((user) => {
+          const event: AuthEvent = user
+            ? { kind: "signed_in", user }
+            : { kind: "needs_setup", email: fbUser.email ?? "", uid: fbUser.uid };
+          cb(event);
+        })
+        .catch((err) => {
+          cb({ kind: "error", message: err instanceof Error ? err.message : "Could not load your City Ops profile." });
+        });
     });
   },
   async loginWithEmail(email, password) {

@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { Navigate } from "react-router-dom";
-import { LogIn, Users, ShieldCheck } from "lucide-react";
+import { LogIn, Users, ShieldCheck, UserCog, AlertTriangle, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/auth/AuthContext";
 
 export default function Login() {
-  const { user, status, isDemoMode, loginWithEmail, loginDemo } = useAuth();
+  const { user, status, pendingSetup, authError, isDemoMode, loginWithEmail, loginDemo, logout } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -15,6 +15,62 @@ export default function Login() {
 
   if (status === "authed" && user) {
     return <Navigate to={user.role === "MANAGER" ? "/" : "/fo"} replace />;
+  }
+
+  // Firebase Auth succeeded, but there's no users/{uid} profile document
+  // yet — never silently sit on the sign-in form with no explanation.
+  if (status === "needs_setup" && pendingSetup) {
+    return (
+      <div className="min-h-dvh w-full flex items-center justify-center bg-background px-4">
+        <div className="w-full max-w-sm">
+          <div className="flex items-center gap-2 justify-center mb-6">
+            <div className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold">C</div>
+            <div className="text-xl font-semibold tracking-tight">City Ops OS</div>
+          </div>
+          <div className="rounded-xl border border-warning/30 bg-surface p-6 space-y-4 text-center">
+            <UserCog className="size-8 text-warning mx-auto" />
+            <div>
+              <h1 className="text-lg font-semibold">Account setup required</h1>
+              <p className="text-sm text-muted mt-1">
+                You're signed in as <span className="font-medium text-foreground">{pendingSetup.email}</span>, but this account
+                hasn't been provisioned for City Ops OS yet.
+              </p>
+            </div>
+            <div className="rounded-md border border-border bg-surface-2 px-3 py-2.5 text-left text-xs text-muted">
+              Ask your administrator to create a <code className="text-foreground">users/{pendingSetup.uid}</code> document in
+              Firestore with a <code className="text-foreground">role</code> field (<code className="text-foreground">MANAGER</code>{" "}
+              or <code className="text-foreground">FIELD_OFFICER</code>) — see DEPLOYMENT.md.
+            </div>
+            <Button variant="secondary" className="w-full" onClick={() => logout()}>
+              <LogOut className="size-4" /> Sign out
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "error") {
+    return (
+      <div className="min-h-dvh w-full flex items-center justify-center bg-background px-4">
+        <div className="w-full max-w-sm">
+          <div className="flex items-center gap-2 justify-center mb-6">
+            <div className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold">C</div>
+            <div className="text-xl font-semibold tracking-tight">City Ops OS</div>
+          </div>
+          <div className="rounded-xl border border-critical/30 bg-surface p-6 space-y-4 text-center">
+            <AlertTriangle className="size-8 text-critical mx-auto" />
+            <div>
+              <h1 className="text-lg font-semibold">Couldn't load your account</h1>
+              <p className="text-sm text-muted mt-1">{authError ?? "Something went wrong reaching the backend."}</p>
+            </div>
+            <Button variant="secondary" className="w-full" onClick={() => logout()}>
+              <LogOut className="size-4" /> Sign out and try again
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   async function submitLogin() {

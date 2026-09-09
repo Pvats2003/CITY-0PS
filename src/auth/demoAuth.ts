@@ -63,13 +63,16 @@ export function loginDemo(role: UserRole): AuthResult {
 
 export const demoAuthProvider: AuthProvider = {
   onChange(cb) {
-    cb(readSession());
-    const handler = () => cb(readSession());
-    window.addEventListener("city-ops-auth-change", handler);
-    window.addEventListener("storage", handler);
+    const emit = () => {
+      const user = readSession();
+      cb(user ? { kind: "signed_in", user } : { kind: "signed_out" });
+    };
+    emit();
+    window.addEventListener("city-ops-auth-change", emit);
+    window.addEventListener("storage", emit);
     return () => {
-      window.removeEventListener("city-ops-auth-change", handler);
-      window.removeEventListener("storage", handler);
+      window.removeEventListener("city-ops-auth-change", emit);
+      window.removeEventListener("storage", emit);
     };
   },
   async loginWithEmail() {
