@@ -1,9 +1,32 @@
 import { useCity } from "@/store/city";
 import { isFirebaseConfigured } from "@/auth/config";
-import { COLLECTION_NAMES, type RemoteBackend } from "./backend";
+import { waitForAuthReady } from "@/auth/authReady";
+import { COLLECTION_NAMES, type CollectionName, type RemoteBackend } from "./backend";
 import { localBackend } from "./localBackend";
 import { enqueue, drainOutbox } from "./outbox";
 import type { CityStore } from "@/store/city";
+
+const SYNCED_CHANGE_EVENT = "city-ops-synced-collections-change";
+const syncedCollections = new Set<CollectionName>();
+
+function markSynced(name: CollectionName) {
+  if (syncedCollections.has(name)) return;
+  syncedCollections.add(name);
+  window.dispatchEvent(new CustomEvent(SYNCED_CHANGE_EVENT));
+}
+
+/** Has this collection received at least one snapshot from the remote
+ * backend since page load? Demo mode never marks anything synced (there's
+ * nothing remote to wait for — see useCollectionSyncStatus.ts, which treats
+ * demo mode as its own case rather than a permanent "loading"). */
+export function hasSyncedOnce(name: CollectionName): boolean {
+  return syncedCollections.has(name);
+}
+
+export function onSyncedCollectionsChange(cb: () => void): () => void {
+  window.addEventListener(SYNCED_CHANGE_EVENT, cb);
+  return () => window.removeEventListener(SYNCED_CHANGE_EVENT, cb);
+}
 
 declare global {
   interface Window {
@@ -39,12 +62,24 @@ export async function startSyncEngine(): Promise<void> {
     return; // demo mode: no subscriptions, no outbox draining, zero network
   }
 
+  // Wait for a real signed-in identity before attaching any listener. Every
+  // shared collection's rules require isSignedIn() — subscribing while
+  // signed out gets denied immediately, and the Firestore SDK tears down
+  // (never retries) a listener that's been denied once, even after the
+  // user then signs in. Without this, a collection subscribed on an
+  // unauthenticated first page load (e.g. /fo/login, before the sign-in
+  // form is even submitted) can stay permanently empty for the rest of the
+  // session — the concrete cause of "FO record not found" despite a
+  // correct foId and a matching fos/{doc}.
+  await waitForAuthReady();
+
   // Remote -> local: each collection's current document set replaces ours.
   for (const name of COLLECTION_NAMES) {
     backend.subscribeCollection(name, (docs) => {
       applyingRemoteUpdate = true;
       useCity.getState().mergeRemoteCollection(name, docs);
       applyingRemoteUpdate = false;
+      markSynced(name);
     });
   }
 

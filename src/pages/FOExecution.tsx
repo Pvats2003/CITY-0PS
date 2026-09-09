@@ -34,6 +34,7 @@ import { RigIncidentFormDialog } from "@/components/forms/RigIncidentFormDialog"
 import { PostSessionCheckDialog } from "@/components/forms/PostSessionCheckDialog";
 import { useAuth } from "@/auth/AuthContext";
 import { useSyncStatus } from "@/data/useSyncStatus";
+import { useCollectionSyncStatus } from "@/data/useCollectionSyncStatus";
 import type { Assignment } from "@/types";
 
 type BottomTab = "today" | "sessions" | "issues" | "profile";
@@ -46,7 +47,14 @@ export default function FOExecution() {
   const { user, logout } = useAuth();
   const id = params.id ?? user?.foId;
   const data = useCity();
+  // The application identity is FieldOfficer.id (the app-level foId, e.g.
+  // "FO_RJT001"), never the Firestore document ID — firebaseBackend.ts's
+  // subscribeCollection maps snapshots via d.data(), which discards d.id
+  // entirely, so a document's own Firestore doc ID is never even available
+  // here to match against by mistake.
   const fo = data.fos.find((f) => f.id === id);
+  const fosSyncStatus = useCollectionSyncStatus("fos");
+  const syncStatus = useSyncStatus();
   const date = todayISO();
   const [tab, setTab] = useState<BottomTab>("today");
   const [selected, setSelected] = useState<string | null>(null);
@@ -70,19 +78,62 @@ export default function FOExecution() {
   // live "foId reads as missing/mismatched" issue is confirmed resolved.
   useEffect(() => {
     if (!fo && !params.id) {
-      console.info("[CITY-OPS-DIAG] FO record not found for logged-in user", {
-        triedId: id,
+      console.info("[CITY-OPS-DIAG] FO resolution", {
+        requestedFoId: id,
         userFoId: user?.foId,
-        fosLoadedCount: data.fos.length,
-        fosIds: data.fos.map((f) => f.id),
+        fosSyncStatus,
+        loadedFoCount: data.fos.length,
+        loadedFoIds: data.fos.map((f) => f.id),
+        generalSyncStatus: syncStatus.status,
+        generalSyncError: syncStatus.errorMessage,
       });
     }
-  }, [fo, params.id, id, user?.foId, data.fos]);
+  }, [fo, params.id, id, user?.foId, data.fos, fosSyncStatus, syncStatus.status, syncStatus.errorMessage]);
 
   if (!fo) {
     // Manager preview of a specific FO that no longer exists.
     if (params.id) return <Navigate to="/field-officers" replace />;
-    // Logged-in FO whose users/{uid} doc doesn't resolve to a real
+
+    // A genuine sync/permission failure is checked BEFORE "still loading":
+    // a denied listener never delivers a snapshot, so fosSyncStatus would
+    // otherwise stay "loading" forever and mask the error behind an
+    // infinite spinner. Distinct from "not found" — never lumped together,
+    // always with a way to retry or leave.
+    if (syncStatus.status === "error") {
+      return (
+        <div className="min-h-dvh flex flex-col items-center justify-center gap-3 bg-background text-foreground max-w-md mx-auto border-x border-border p-6 text-center">
+          <ShieldAlert className="size-10 text-critical" />
+          <div className="text-base font-semibold">Couldn't load your field officer data</div>
+          <p className="text-sm text-muted">{syncStatus.errorMessage ?? "A sync error is preventing your profile from loading."}</p>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => window.location.reload()}>
+              <RefreshCw className="size-4" /> Retry
+            </Button>
+            <Button variant="secondary" onClick={() => logout()}>
+              <LogOut className="size-4" /> Sign out
+            </Button>
+          </div>
+        </div>
+      );
+    }
+
+    // The fos collection hasn't delivered its first snapshot yet — this is
+    // NOT "not found," it's "don't know yet." Concluding "not configured"
+    // here (as the code used to) is exactly what made a correct foId look
+    // broken during the brief (or, before the syncEngine fix, permanent)
+    // window before the first snapshot arrives.
+    if (fosSyncStatus === "loading") {
+      return (
+        <div className="min-h-dvh flex flex-col items-center justify-center gap-3 bg-background text-foreground max-w-md mx-auto border-x border-border p-6 text-center">
+          <RefreshCw className="size-8 text-muted animate-spin" />
+          <div className="text-base font-semibold">Loading your field officer profile…</div>
+          <p className="text-sm text-muted">Syncing with your city's data.</p>
+        </div>
+      );
+    }
+
+    // Loaded (or demo mode, where sync doesn't apply) and genuinely not
+    // found. Logged-in FO whose users/{uid} doc doesn't resolve to a real
     // FieldOfficer record — either foId was never set, or it was set to an
     // id that doesn't match anyone in the loaded city. Distinct messages so
     // whoever provisioned the account knows exactly what to fix.

@@ -29,6 +29,19 @@ export const firebaseBackend: RemoteBackend = {
     return onSnapshot(
       ref,
       (snap) => {
+        // TEMPORARY production diagnostic for the fos-resolution
+        // investigation — proves definitively which id each fos document
+        // actually carries: the Firestore document ID (snap doc.id) is
+        // deliberately NOT used for matching anywhere in this app (see
+        // FOExecution.tsx) — only the app-level `id` field inside the
+        // document's own data is. This confirms that at the source, not by
+        // inference. Safe to delete once resolved.
+        if (name === "fos") {
+          console.info(
+            "[CITY-OPS-DIAG] fos snapshot received",
+            snap.docs.map((d) => ({ firestoreDocId: d.id, dataId: (d.data() as { id?: unknown }).id })),
+          );
+        }
         cb(snap.docs.map((d) => d.data() as never));
       },
       (err) => {

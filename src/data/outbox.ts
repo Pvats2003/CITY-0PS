@@ -1,6 +1,18 @@
 import { get, set, del, keys } from "idb-keyval";
 import type { CollectionName, RemoteBackend } from "./backend";
 
+declare global {
+  interface Window {
+    /** Test-only seam (mirrors __CITY_OPS_TEST_BACKEND__/
+     * __CITY_OPS_TEST_AUTH_PROVIDER__) — lets Playwright simulate a real
+     * Firestore permission-denied surfacing as SYNC ERROR, without a live
+     * project. Assigned unconditionally below (a plain function reference,
+     * nothing sensitive); inert for real users since nothing in the shipped
+     * app ever calls it. */
+    __CITY_OPS_TEST_FORCE_SYNC_ERROR__?: (message: string) => void;
+  }
+}
+
 export interface OutboxEntry {
   collection: CollectionName;
   id: string;
@@ -65,6 +77,10 @@ export function clearSyncError(): void {
     lastSyncError = null;
     notifyChange();
   }
+}
+
+if (typeof window !== "undefined") {
+  window.__CITY_OPS_TEST_FORCE_SYNC_ERROR__ = reportSyncError;
 }
 
 export function describeError(err: unknown): string {
