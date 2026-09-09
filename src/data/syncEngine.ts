@@ -61,11 +61,23 @@ declare global {
 
 let started = false;
 let applyingRemoteUpdate = false;
+// Every teardown function this run of the engine created — listener
+// unsubscribes, the local Zustand watcher, the `online` handler — so
+// resetSyncEngine() can cleanly stop ALL of them, not just flip the
+// `started` flag back to false and leave the previous user's listeners
+// (and their in-flight errors) still attached underneath.
+let teardowns: Array<() => void> = [];
 
 /** Wires the Zustand store to a shared backend: local mutations flow out
  * through the outbox, remote changes flow in via subscribeCollection. A
  * no-op in demo mode (no Firebase configured, no test backend injected) —
- * the store behaves exactly as it did before multi-user support. */
+ * the store behaves exactly as it did before multi-user support.
+ *
+ * Safe to call again after resetSyncEngine() — e.g. on a fresh sign-in
+ * following a sign-out in the same tab, where nothing else re-triggers
+ * this (no full page reload) and `started` would otherwise permanently
+ * latch this to the FIRST signed-in user/role for the rest of the tab's
+ * lifetime. */
 export async function startSyncEngine(): Promise<void> {
   if (started) return;
   started = true;
@@ -91,12 +103,18 @@ export async function startSyncEngine(): Promise<void> {
   // stay permanently empty for the rest of the session — the concrete
   // cause of "FO record not found" despite a correct foId and a matching
   // fos/{doc}.
-  const { role } = await waitForAuthReady();
+  const { role, foId } = await waitForAuthReady();
   const collectionsToSync = collectionsForRole(role);
+  // Passed to every subscription (subscribeCollection ignores it for
+  // collections that don't need it) — only firebaseBackend.ts's ownership-
+  // scoped collections (assignments/sessions/issues/rigIncidents) actually
+  // use it, to build the `where("foId", "==", ...)` their firestore.rules
+  // grant requires for any list/listen to succeed at all.
+  const scope = role === "FIELD_OFFICER" && foId ? { foId } : undefined;
 
   // Remote -> local: each collection's current document set replaces ours.
   for (const name of collectionsToSync) {
-    backend.subscribeCollection(name, (docs) => {
+    const unsub = backend.subscribeCollection(name, (docs) => {
       applyingRemoteUpdate = true;
       useCity.getState().mergeRemoteCollection(name, docs);
       applyingRemoteUpdate = false;
@@ -125,7 +143,8 @@ export async function startSyncEngine(): Promise<void> {
           " count=" +
           docs.length,
       );
-    });
+    }, scope);
+    teardowns.push(unsub);
   }
 
   // Local -> outbox: Immer preserves referential identity for untouched
@@ -138,7 +157,7 @@ export async function startSyncEngine(): Promise<void> {
   // the outbox with the entire local dataset on every app boot.
   function attachLocalWatcher() {
     let prev = useCity.getState();
-    useCity.subscribe((state: CityStore) => {
+    const unsub = useCity.subscribe((state: CityStore) => {
       if (applyingRemoteUpdate) {
         prev = state;
         return;
@@ -165,6 +184,7 @@ export async function startSyncEngine(): Promise<void> {
       // instead of "eventually, next time the app happens to start."
       if (queued.length > 0) void Promise.all(queued).then(() => drainOutbox(backend));
     });
+    teardowns.push(unsub);
   }
 
   if (useCity.persist.hasHydrated()) {
@@ -173,6 +193,35 @@ export async function startSyncEngine(): Promise<void> {
     useCity.persist.onFinishHydration(attachLocalWatcher);
   }
 
-  window.addEventListener("online", () => drainOutbox(backend));
+  const goOnline = () => drainOutbox(backend);
+  window.addEventListener("online", goOnline);
+  teardowns.push(() => window.removeEventListener("online", goOnline));
   void drainOutbox(backend);
+}
+
+/** Tears down every listener/watcher this run of the engine attached and
+ * resets its state so a subsequent startSyncEngine() call (after a fresh
+ * sign-in) starts completely clean — new role-appropriate subscriptions,
+ * new scope, no leftover errors from the PREVIOUS signed-in account.
+ * Without this, `started` latches the engine to whichever user was signed
+ * in when it first ran, for the rest of the tab's lifetime: a sign-out
+ * followed by a different sign-in (no full page reload) would leave the
+ * old user's listeners attached and any of their sync errors still
+ * visible, with no new subscriptions ever created for the new user's role.
+ * Called from AuthContext on every transition into "anon" (a real
+ * sign-out), never on transient states (loading, needs_setup, error) that
+ * aren't actually a completed sign-out. */
+export function resetSyncEngine(): void {
+  for (const teardown of teardowns) teardown();
+  teardowns = [];
+  started = false;
+  applyingRemoteUpdate = false;
+  syncedCollections.clear();
+  // Every collection's error, not just one — this is a full identity
+  // change, not "this one collection recovered," so the aggregate
+  // Manager-wide status pill and any per-collection reader alike must both
+  // start clean rather than carry forward a denial that belonged to
+  // whoever was signed in a moment ago.
+  clearSyncError();
+  window.dispatchEvent(new CustomEvent(SYNCED_CHANGE_EVENT));
 }

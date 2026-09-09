@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { isFirebaseConfigured } from "./config";
 import { demoAuthProvider, loginDemo as demoLoginDemo } from "./demoAuth";
+import { resetSyncEngine, startSyncEngine } from "@/data/syncEngine";
 import type { AppUser, AuthProvider, AuthResult, AuthStatus, UserRole } from "./types";
 
 declare global {
@@ -74,12 +75,28 @@ export function AuthProviderRoot({ children }: { children: ReactNode }) {
     const unsub = activeProvider.onChange((event) => {
       switch (event.kind) {
         case "signed_out":
+          // Tears down every listener/watcher the PREVIOUS signed-in
+          // account's sync engine run attached and clears every collection's
+          // sync error — without this, `started` inside syncEngine.ts
+          // latches it to whichever account was signed in when it first
+          // ran, for the rest of the tab's lifetime: a different account
+          // signing in afterward (no full page reload happens on sign-out)
+          // would get no new role-scoped subscriptions at all, and could
+          // still see the PREVIOUS account's stale sync error. Harmless to
+          // call even if the engine never started (demo mode, or this is
+          // the very first "anon" state on a fresh unauthenticated visit).
+          resetSyncEngine();
           setUser(null);
           setPendingSetup(null);
           setAuthError(null);
           setStatus("anon");
           break;
         case "signed_in":
+          // (Re)starts the sync engine for THIS account — a no-op if it's
+          // already running for this exact run (startSyncEngine's own
+          // `started` guard), and the only place that restarts it after a
+          // resetSyncEngine() following a sign-out earlier in this tab.
+          void startSyncEngine();
           // TEMPORARY production diagnostic — PRIMITIVE values only,
           // logged at the exact moment this context is about to store this
           // object as `user`, at the moment it receives it from the active

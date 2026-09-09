@@ -1,11 +1,9 @@
-import { useEffect } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useApplyTheme } from "@/lib/theme";
 import { AuthProviderRoot } from "@/auth/AuthContext";
 import { RequireRole } from "@/auth/RequireRole";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { startSyncEngine } from "@/data/syncEngine";
 import Login from "@/pages/Login";
 import FOLogin from "@/pages/FOLogin";
 import FOExecution from "@/pages/FOExecution";
@@ -13,9 +11,6 @@ import ManagerApp from "@/ManagerApp";
 
 function App() {
   useApplyTheme();
-  useEffect(() => {
-    void startSyncEngine();
-  }, []);
 
   return (
     <TooltipProvider delayDuration={200}>

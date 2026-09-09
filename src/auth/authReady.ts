@@ -9,6 +9,12 @@ export interface AuthReady {
    * function's prior (role-blind) behavior, rather than silently
    * under-subscribing. */
   role: UserRole | null;
+  /** The signed-in Field Officer's own foId, trimmed the same way
+   * firebaseAuth.ts's loadAppUser trims it — used to scope
+   * OWNERSHIP_SCOPED_FO_COLLECTIONS listens to `where("foId", "==", ...)`,
+   * the only query shape their firestore.rules grant actually permits.
+   * undefined for a Manager, in demo mode, or if it couldn't be read. */
+  foId?: string;
 }
 
 /** Resolves once a real identity — and, on the real Firebase path, that
@@ -46,7 +52,7 @@ export async function waitForAuthReady(): Promise<AuthReady> {
       const unsub = testProvider.onChange((event) => {
         if (event.kind === "signed_in") {
           unsub();
-          resolve({ role: event.user.role });
+          resolve({ role: event.user.role, foId: event.user.foId });
         }
       });
     });
@@ -77,8 +83,15 @@ export async function waitForAuthReady(): Promise<AuthReady> {
     const { getFirestore, doc, getDoc } = await import("firebase/firestore");
     const db = getFirestore(getFirebaseApp());
     const snap = await getDoc(doc(db, "users", fbUser.uid));
-    const role = snap.exists() ? (((snap.data() as { role?: UserRole }).role ?? null) as UserRole | null) : null;
-    return { role };
+    if (!snap.exists()) return { role: null };
+    const data = snap.data() as { role?: UserRole; foId?: string };
+    const role = (data.role ?? null) as UserRole | null;
+    // Same trim loadAppUser applies to the identical field on the identical
+    // doc — an untrimmed value here would scope the ownership-filtered
+    // query to the wrong string and reproduce the exact whitespace bug
+    // already fixed for FO matching, one layer down.
+    const foId = typeof data.foId === "string" ? data.foId.trim() || undefined : undefined;
+    return { role, foId };
   } catch {
     return { role: null };
   }

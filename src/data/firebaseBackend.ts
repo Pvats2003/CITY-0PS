@@ -1,8 +1,8 @@
-import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc as fsDeleteDoc, query, orderBy, limit } from "firebase/firestore";
+import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc as fsDeleteDoc, query, orderBy, limit, where } from "firebase/firestore";
 import { getFirebaseApp } from "@/auth/firebaseApp";
 import { reportSyncError, describeError } from "./outbox";
 import { setFosDiagSnapshot, getFosDiagSnapshot } from "./fosDiag";
-import type { CollectionName, RemoteBackend } from "./backend";
+import { OWNERSHIP_SCOPED_FO_COLLECTIONS, type CollectionName, type RemoteBackend } from "./backend";
 
 /** The activity log is the one unbounded, high-write-frequency collection
  * (every action appends to it — see logActivity in store/city.ts, which
@@ -23,11 +23,26 @@ const ACTIVITY_LISTEN_LIMIT = 500;
  * changes thereafter, not a full re-fetch on every update — Firestore's
  * standard, cost-efficient listen pattern. */
 export const firebaseBackend: RemoteBackend = {
-  subscribeCollection(name: CollectionName, cb) {
+  subscribeCollection(name: CollectionName, cb, scope) {
     const app = getFirebaseApp();
     const db = getFirestore(app);
+    // Ownership-scoped collections (assignments/sessions/issues/
+    // rigIncidents) grant read via `resource.data.foId == myFoId()` in
+    // firestore.rules — a rule Firestore cannot prove true for an
+    // unfiltered list, since it depends on each document's own data rather
+    // than only on the requester. Without a matching `where` clause the
+    // ENTIRE listen is denied with permission-denied, even though every
+    // document in it does belong to this FO — proven against a local
+    // Firestore emulator, not inferred (see commit history). A Manager
+    // subscription (scope undefined) and every non-ownership-scoped
+    // collection are unaffected — they keep the original unfiltered query.
+    const isFoScoped = !!scope && OWNERSHIP_SCOPED_FO_COLLECTIONS.includes(name);
     const ref =
-      name === "activity" ? query(collection(db, name), orderBy("at", "desc"), limit(ACTIVITY_LISTEN_LIMIT)) : collection(db, name);
+      name === "activity"
+        ? query(collection(db, name), orderBy("at", "desc"), limit(ACTIVITY_LISTEN_LIMIT))
+        : isFoScoped
+          ? query(collection(db, name), where("foId", "==", scope.foId))
+          : collection(db, name);
 
     // TEMPORARY production diagnostics — primitive values only (never a
     // collapsed object a screenshot can't show the contents of). Every
@@ -36,12 +51,23 @@ export const firebaseBackend: RemoteBackend = {
     // to several. Answers exactly what operation/path/project this client
     // issued, and, on success or failure, exactly what came back. Safe to
     // delete once resolved.
-    console.log("[CITY-OPS-DIAG] subscribing collection=" + name + " path=/" + name + " projectId=" + app.options.projectId);
+    console.log(
+      "[CITY-OPS-DIAG] subscribing collection=" +
+        name +
+        " path=/" +
+        name +
+        " projectId=" +
+        app.options.projectId +
+        " foScoped=" +
+        isFoScoped,
+    );
+    console.log("[CITY-OPS-DIAG] SYNC_COLLECTION", "collection=" + name, "status=subscribing", "errorCode=NONE", "errorMessage=NONE");
 
     return onSnapshot(
       ref,
       (snap) => {
         console.log("[CITY-OPS-DIAG] listener success collection=" + name + " count=" + snap.docs.length);
+        console.log("[CITY-OPS-DIAG] SYNC_COLLECTION", "collection=" + name, "status=success", "errorCode=NONE", "errorMessage=NONE");
         if (name === "fos") {
           // Proves definitively which id each fos document actually
           // carries: the Firestore document ID (snap doc.id) is
@@ -85,6 +111,13 @@ export const firebaseBackend: RemoteBackend = {
         // the same per-collection SYNC ERROR surface as write failures.
         const code = (err as { code?: string }).code ?? "unknown";
         console.log("[CITY-OPS-DIAG] listener error collection=" + name + " code=" + code + " message=" + JSON.stringify(err.message));
+        console.log(
+          "[CITY-OPS-DIAG] SYNC_COLLECTION",
+          "collection=" + name,
+          "status=error",
+          "errorCode=" + code,
+          "errorMessage=" + JSON.stringify(err.message),
+        );
         reportSyncError(name, describeError(err));
       },
     );
