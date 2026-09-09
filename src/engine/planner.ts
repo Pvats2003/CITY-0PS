@@ -2,7 +2,7 @@ import { id } from "@/lib/id";
 import { isoAtTime } from "@/lib/dates";
 import { overlaps } from "./selectors";
 import { buildRigSummary, isDeployable, proposeRigReplacement, type RigSummary } from "./rigGuardian";
-import type { Assignment, CityData, CitySettings, PlanConflict, Severity } from "@/types";
+import type { Assignment, AssignmentRecommendation, CityData, CitySettings, PlanConflict, Severity } from "@/types";
 
 export interface ScoreBreakdownItem {
   label: string;
@@ -14,6 +14,7 @@ export interface PlanResult {
   conflicts: PlanConflict[];
   score: number;
   breakdown: ScoreBreakdownItem[];
+  recommendations: AssignmentRecommendation[];
 }
 
 export function detectConflicts(assignments: Assignment[], data: CityData, date: string): PlanConflict[] {
@@ -185,6 +186,84 @@ export function scorePlan(
   return { score, breakdown };
 }
 
+/** Deterministic, explainable per-assignment "why" — the AI planning
+ * intelligence the product spec calls for, built the same way Rig Guardian's
+ * health score is: a transparent function of already-known data, never a
+ * live model call. Recomputed from whatever `assignments` currently is
+ * (recalculated live as the Manager edits the draft), so the reasoning
+ * shown is always for the plan as it actually stands right now, not a
+ * stale snapshot of the original proposal. */
+export function explainAssignments(assignments: Assignment[], data: CityData, conflicts: PlanConflict[], targetHours: number): AssignmentRecommendation[] {
+  const bizMap = new Map(data.businesses.map((b) => [b.id, b]));
+  const rigSummaryMap = new Map(data.rigs.map((r) => [r.id, buildRigSummary(data, r)]));
+  const conflictedIds = new Set(conflicts.flatMap((c) => c.assignmentIds));
+
+  const byFO = new Map<string, Assignment[]>();
+  for (const a of assignments) byFO.set(a.foId, [...(byFO.get(a.foId) ?? []), a]);
+
+  const byBusinessHours = new Map<string, number>();
+  for (const a of assignments) {
+    const h = (new Date(a.plannedEnd).getTime() - new Date(a.plannedStart).getTime()) / 3_600_000;
+    byBusinessHours.set(a.businessId, (byBusinessHours.get(a.businessId) ?? 0) + h);
+  }
+
+  const out: AssignmentRecommendation[] = [];
+  for (const a of assignments) {
+    const why: string[] = [];
+    let risk: string | undefined;
+    let demerits = 0;
+
+    const rigSummary = a.rigId ? rigSummaryMap.get(a.rigId) : undefined;
+    if (rigSummary) {
+      if (rigSummary.readiness === "healthy") why.push(`${rigSummary.rig.code} is healthy`);
+      else {
+        why.push(`${rigSummary.rig.code} is ${rigSummary.readiness.replace(/_/g, " ")} (${rigSummary.score}/100)`);
+        demerits += 1;
+      }
+    }
+
+    const biz = bizMap.get(a.businessId);
+    if (biz) {
+      const hoursForBiz = byBusinessHours.get(a.businessId) ?? 0;
+      if (hoursForBiz >= biz.capacityHoursPerDay) why.push(`${biz.name} reaches its ${biz.capacityHoursPerDay}h target`);
+      else why.push(`${biz.name} has unmet target (${hoursForBiz.toFixed(1)}/${biz.capacityHoursPerDay}h)`);
+    }
+
+    // Travel: does this assignment follow a DIFFERENT-area visit for the
+    // same FO earlier the same day?
+    const foList = [...(byFO.get(a.foId) ?? [])].sort((x, y) => new Date(x.plannedStart).getTime() - new Date(y.plannedStart).getTime());
+    const idxInFoList = foList.findIndex((x) => x.id === a.id);
+    if (idxInFoList > 0) {
+      const prevArea = bizMap.get(foList[idxInFoList - 1].businessId)?.area;
+      const currArea = biz?.area;
+      if (prevArea && currArea && prevArea !== currArea) {
+        why.push(`requires travel between ${prevArea} and ${currArea}`);
+        risk = "Medium travel risk.";
+        demerits += 1;
+      } else {
+        why.push("avoids overlap and unnecessary travel");
+      }
+    } else {
+      why.push("no schedule overlap");
+    }
+
+    const durationH = (new Date(a.plannedEnd).getTime() - new Date(a.plannedStart).getTime()) / 3_600_000;
+    why.push(`adds ${durationH.toFixed(1)} productive hour${durationH === 1 ? "" : "s"}`);
+
+    if (conflictedIds.has(a.id)) {
+      risk = "Scheduling conflict — resolve before approving.";
+      demerits += 2;
+    }
+
+    const totalPlannedHours = assignments.reduce((s, x) => s + (new Date(x.plannedEnd).getTime() - new Date(x.plannedStart).getTime()) / 3_600_000, 0);
+    if (targetHours > 0 && totalPlannedHours >= targetHours) why.push(`contributes to reaching the ${targetHours}h target`);
+
+    const confidence: AssignmentRecommendation["confidence"] = demerits >= 2 ? "low" : demerits === 1 ? "medium" : "high";
+    out.push({ assignmentId: a.id, confidence, why, risk });
+  }
+  return out;
+}
+
 /** Deterministic heuristic planner — not an optimizer. Balances FO workload,
  * groups by area, respects business preferred windows, and avoids conflicts
  * greedily in the order businesses are considered. */
@@ -202,7 +281,7 @@ export function proposeDailyPlan(data: CityData, date: string, settings: CitySet
     .sort((a, b) => b.score - a.score);
 
   if (activeFOs.length === 0 || activeBusinesses.length === 0) {
-    return { assignments: [], conflicts: [], score: 0, breakdown: [{ label: "No available FOs or businesses to plan", delta: 0 }] };
+    return { assignments: [], conflicts: [], score: 0, breakdown: [{ label: "No available FOs or businesses to plan", delta: 0 }], recommendations: [] };
   }
 
   // prioritize businesses not visited recently
@@ -285,7 +364,9 @@ export function proposeDailyPlan(data: CityData, date: string, settings: CitySet
   const conflicts = detectConflicts(assignments, data, date);
   const { score, breakdown } = scorePlan(assignments, conflicts, data, settings.recordingHoursTargetPerDay);
 
-  return { assignments, conflicts, score, breakdown };
+  const recommendations = explainAssignments(assignments, data, conflicts, settings.recordingHoursTargetPerDay);
+
+  return { assignments, conflicts, score, breakdown, recommendations };
 }
 
 export interface ReplanSuggestion {

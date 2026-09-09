@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useParams, Link, Navigate } from "react-router-dom";
-import { ArrowLeft, Pencil, Smartphone, Lightbulb, CheckCircle2, Circle, PlayCircle } from "lucide-react";
+import { ArrowLeft, Pencil, Smartphone, Lightbulb, CheckCircle2, Circle, PlayCircle, PlusCircle, XCircle } from "lucide-react";
 import { useCity } from "@/store/city";
 import { computeFOStats, foInsightText } from "@/engine/insights";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,23 +8,29 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status";
 import { ActivityTimeline } from "@/components/shared/ActivityTimeline";
 import { FOFormDialog } from "@/components/forms/FOFormDialog";
+import { AssignmentFormDialog } from "@/components/forms/AssignmentFormDialog";
 import { fmtTime, fmtHours, todayISO } from "@/lib/dates";
 import { assignmentStatusToStatus } from "@/engine/todayView";
 
 export default function FieldOfficerDetail() {
   const { id } = useParams();
   const data = useCity();
+  const addAssignment = useCity((s) => s.addAssignment);
+  const updateAssignment = useCity((s) => s.updateAssignment);
   const [editOpen, setEditOpen] = useState(false);
+  const [assignOpen, setAssignOpen] = useState(false);
   const fo = data.fos.find((f) => f.id === id);
   const date = todayISO();
 
   const stats = useMemo(() => (fo ? computeFOStats(data, fo) : null), [data, fo]);
   const events = useMemo(() => data.activity.filter((e) => e.foId === id).sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()), [data.activity, id]);
   const bizMap = new Map(data.businesses.map((b) => [b.id, b]));
+  const rigMap = new Map(data.rigs.map((r) => [r.id, r]));
   const today = useMemo(
     () => data.assignments.filter((a) => a.foId === id && a.date === date).sort((a, b) => new Date(a.plannedStart).getTime() - new Date(b.plannedStart).getTime()),
     [data.assignments, id, date],
   );
+  const todayHours = today.reduce((s, a) => s + (new Date(a.plannedEnd).getTime() - new Date(a.plannedStart).getTime()) / 3_600_000, 0);
 
   if (!fo) return <Navigate to="/field-officers" replace />;
   const insight = foInsightText(stats!);
@@ -100,22 +106,42 @@ export default function FieldOfficerDetail() {
 
         <div>
           <Card>
-            <CardHeader>
-              <CardTitle>FO Today</CardTitle>
+            <CardHeader className="flex-row items-center justify-between space-y-0">
+              <CardTitle>
+                FO Today <span className="text-muted font-normal text-xs ml-1">{fmtHours(todayHours)} planned</span>
+              </CardTitle>
+              <Button size="sm" variant="secondary" onClick={() => setAssignOpen(true)}>
+                <PlusCircle className="size-3.5" /> Assign rig
+              </Button>
             </CardHeader>
-            <CardContent className="pt-0 space-y-0">
+            <CardContent className="pt-0 space-y-2">
               {today.length === 0 && <div className="text-sm text-muted py-4 text-center">Nothing scheduled today.</div>}
               {today.map((a) => {
                 const status = assignmentStatusToStatus(a.status);
                 const Icon = a.status === "completed" ? CheckCircle2 : a.status === "in_progress" ? PlayCircle : Circle;
+                const rig = a.rigId ? rigMap.get(a.rigId) : undefined;
+                const removable = a.status === "planned" || a.status === "confirmed";
                 return (
-                  <div key={a.id} className="flex items-center gap-2.5 py-2.5 border-t border-border first:border-t-0">
+                  <div key={a.id} className="flex items-center gap-2.5 rounded-md border border-border px-3 py-2.5">
                     <Icon className={`size-4 shrink-0 ${a.status === "completed" ? "text-success" : a.status === "in_progress" ? "text-info" : "text-muted-2"}`} />
                     <div className="min-w-0 flex-1">
                       <div className="text-sm truncate">{bizMap.get(a.businessId)?.name}</div>
-                      <div className="text-xs text-muted">{fmtTime(a.plannedStart)}</div>
+                      <div className="text-xs text-muted truncate">
+                        {fmtTime(a.plannedStart)}–{fmtTime(a.plannedEnd)}
+                        {rig && <span> · {rig.code}</span>}
+                      </div>
                     </div>
                     <StatusBadge status={status} />
+                    {removable && (
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        title="Remove"
+                        onClick={() => updateAssignment(a.id, { status: "cancelled" })}
+                      >
+                        <XCircle className="size-4" />
+                      </Button>
+                    )}
                   </div>
                 );
               })}
@@ -125,6 +151,16 @@ export default function FieldOfficerDetail() {
       </div>
 
       <FOFormDialog open={editOpen} onOpenChange={setEditOpen} fo={fo} />
+      {fo && (
+        <AssignmentFormDialog
+          open={assignOpen}
+          onOpenChange={setAssignOpen}
+          date={date}
+          existingAssignments={data.assignments.filter((a) => a.date === date)}
+          defaults={{ foId: fo.id }}
+          onCreate={(a) => addAssignment({ ...a, status: "confirmed" })}
+        />
+      )}
     </div>
   );
 }

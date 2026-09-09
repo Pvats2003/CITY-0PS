@@ -465,15 +465,52 @@ export interface PlanConflict {
   assignmentIds: string[];
 }
 
+/** DRAFT/REVIEW: nothing here is live yet — draftAssignments is the only
+ * place these assignments exist (see draftAssignments below), never written
+ * to the shared `assignments` array. APPROVED/ACTIVE/COMPLETED/CANCELLED:
+ * the plan has real Assignment records (assignmentIds) that FOs can see.
+ * The product principle this encodes: AI can populate/edit a DRAFT: only a
+ * Manager action (approvePlan) can cross the draft -> approved boundary. */
+export type PlanStatus = "draft" | "review" | "approved" | "active" | "completed" | "cancelled";
+
+export interface AssignmentRecommendation {
+  /** Matches an id in this plan's draftAssignments. */
+  assignmentId: string;
+  confidence: "high" | "medium" | "low";
+  why: string[];
+  risk?: string;
+}
+
 export interface DailyPlan {
   id: string;
   date: string;
+  status: PlanStatus;
+  /** The editable proposal while status is "draft"/"review" — real-shaped
+   * Assignment objects (with real ids already assigned) that have NOT been
+   * pushed into CityData.assignments. Carried forward into assignmentIds
+   * verbatim at approval time (see approvePlan in store/city.ts), so an
+   * assignment's id never changes across the draft -> approved boundary. */
+  draftAssignments?: Assignment[];
+  /** Deterministic AI reasoning per draft assignment — advisory only, never
+   * consulted by approvePlan itself. */
+  recommendations?: AssignmentRecommendation[];
+  /** ids (from draftAssignments) that still match the original AI proposal
+   * unedited — everything else in draftAssignments was added, removed, or
+   * hand-edited by the Manager. Used only for the Plan Summary's
+   * accepted/edited/rejected counters, never for gating anything. */
+  aiSuggestedIds?: string[];
+  /** Populated once APPROVED — the real, live Assignment ids an FO can see. */
   assignmentIds: string[];
   score: number;
   scoreBreakdown: { label: string; delta: number }[];
   conflicts: PlanConflict[];
-  publishedAt?: string;
+  createdBy?: string;
   createdAt: string;
+  updatedAt?: string;
+  /** Set only by approvePlan — the one Manager action that activates a plan. */
+  approvedBy?: string;
+  approvedAt?: string;
+  publishedAt?: string;
 }
 
 // --------------------------------- Daily Report --------------------------------------

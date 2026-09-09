@@ -401,6 +401,7 @@ function BottomNavItem({
 function TodayList({ assignments, onSelect }: { assignments: Assignment[]; onSelect: (id: string) => void }) {
   const data = useCity();
   const bizMap = new Map(data.businesses.map((b) => [b.id, b]));
+  const rigMap = new Map(data.rigs.map((r) => [r.id, r]));
 
   if (assignments.length === 0) {
     return <div className="p-8 text-center text-sm text-muted">No visits scheduled today.</div>;
@@ -408,8 +409,12 @@ function TodayList({ assignments, onSelect }: { assignments: Assignment[]; onSel
 
   return (
     <div className="p-3 space-y-2.5">
+      <div className="text-xs font-medium text-muted px-0.5">
+        {assignments.length} ASSIGNMENT{assignments.length === 1 ? "" : "S"}
+      </div>
       {assignments.map((a) => {
         const biz = bizMap.get(a.businessId);
+        const rig = a.rigId ? rigMap.get(a.rigId) : undefined;
         const done = a.status === "completed";
         const active = a.status === "in_progress";
         return (
@@ -425,6 +430,7 @@ function TodayList({ assignments, onSelect }: { assignments: Assignment[]; onSel
               <div className="text-base font-semibold mt-1 truncate">{biz?.name}</div>
               <div className="text-xs text-muted flex items-center gap-1 mt-0.5">
                 <MapPin className="size-3.5" /> {biz?.area}
+                {rig && <span className="text-muted-2">· {rig.code}</span>}
               </div>
             </button>
             {biz?.lat && biz?.lng && (

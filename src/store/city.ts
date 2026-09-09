@@ -125,6 +125,14 @@ interface CityActions {
   // plans
   addPlan: (p: Omit<DailyPlan, "id" | "createdAt">) => DailyPlan;
   updatePlan: (id: string, patch: Partial<DailyPlan>) => void;
+  /** The ONLY action that turns a plan's draftAssignments into real,
+   * FO-visible Assignment records — the draft -> approved boundary the
+   * product principle requires a deliberate Manager action to cross. A
+   * no-op if the plan has no draftAssignments (already approved, or
+   * doesn't exist). Preserves each draft assignment's id verbatim, so
+   * conflict/recommendation references created against the draft remain
+   * valid after approval. */
+  approvePlan: (planId: string, approvedBy?: string) => void;
 
   // reports
   addReport: (r: Omit<DailyReport, "id" | "generatedAt">) => DailyReport;
@@ -389,6 +397,35 @@ export const useCity = create<CityStore>()(
           const p = s.plans.find((x) => x.id === pid);
           if (p) Object.assign(p, patch);
         }),
+
+      approvePlan: (planId, approvedBy) => {
+        const plan = get().plans.find((p) => p.id === planId);
+        if (!plan?.draftAssignments?.length) return;
+        const now = nowISO();
+        const draft = plan.draftAssignments;
+        set((s) => {
+          for (const a of draft) {
+            // status "planned" -> "confirmed": the plan is no longer a
+            // proposal, it's what the FO will actually execute tomorrow.
+            s.assignments.push({ ...a, status: a.status === "planned" ? "confirmed" : a.status });
+          }
+          const p = s.plans.find((x) => x.id === planId);
+          if (p) {
+            p.status = "approved";
+            p.assignmentIds = draft.map((a) => a.id);
+            p.approvedBy = approvedBy;
+            p.approvedAt = now;
+            p.publishedAt = now;
+            p.updatedAt = now;
+          }
+        });
+        get().logActivity({
+          type: "plan_published",
+          entityKind: "plan",
+          entityId: planId,
+          summary: `Plan for ${plan.date} approved (${draft.length} assignment${draft.length === 1 ? "" : "s"})`,
+        });
+      },
 
       addReport: (r) => {
         const item: DailyReport = { ...r, id: id("rep"), generatedAt: nowISO() };
