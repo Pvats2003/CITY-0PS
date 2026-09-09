@@ -5,11 +5,11 @@ declare global {
   interface Window {
     /** Test-only seam (mirrors __CITY_OPS_TEST_BACKEND__/
      * __CITY_OPS_TEST_AUTH_PROVIDER__) — lets Playwright simulate a real
-     * Firestore permission-denied surfacing as SYNC ERROR, without a live
-     * project. Assigned unconditionally below (a plain function reference,
-     * nothing sensitive); inert for real users since nothing in the shipped
-     * app ever calls it. */
-    __CITY_OPS_TEST_FORCE_SYNC_ERROR__?: (message: string) => void;
+     * Firestore permission-denied surfacing as a per-collection SYNC ERROR,
+     * without a live project. Assigned unconditionally below (a plain
+     * function reference, nothing sensitive); inert for real users since
+     * nothing in the shipped app ever calls it. */
+    __CITY_OPS_TEST_FORCE_SYNC_ERROR__?: (collection: CollectionName, message: string) => void;
   }
 }
 
@@ -49,16 +49,33 @@ export async function outboxDepth(): Promise<number> {
   return allKeys.filter((k) => typeof k === "string" && k.startsWith("outbox:")).length;
 }
 
-let lastSyncError: string | null = null;
+// Per-collection, not a single global flag: a denied listener on one
+// collection (e.g. a Manager-only collection an FO was never granted, or
+// any other collection-specific hiccup) must never be indistinguishable
+// from an error on a DIFFERENT collection a page actually depends on. A
+// page that only cares about `fos` reads ONLY `fos`'s own entry via
+// getCollectionSyncError(); the aggregate getSyncError() below (still used
+// by the Manager-wide system status widgets) reports whether ANYTHING,
+// anywhere, has an error, for that different, deliberately broader purpose.
+const collectionSyncErrors = new Map<CollectionName, string>();
 
-/** Real error only — never fabricated. Cleared the moment a write actually
- * succeeds. Distinct from "offline": this is set when a write was rejected
- * while genuinely online (rules denial, backend unavailable, etc.) — the
- * one case where the UI must say SYNC ERROR rather than pretend success or
- * silently retry forever (spec: never claim an operation succeeded when it
- * didn't). */
+/** Real error only — never fabricated. Cleared the moment a write or
+ * listener on THIS collection actually succeeds. Distinct from "offline":
+ * this is set when a write/read was rejected while genuinely online (rules
+ * denial, backend unavailable, etc.) — the one case where the UI must say
+ * SYNC ERROR rather than pretend success or silently retry forever. */
+export function getCollectionSyncError(collection: CollectionName): string | null {
+  return collectionSyncErrors.get(collection) ?? null;
+}
+
+/** Aggregate view across every collection — "is anything wrong right now,
+ * and what's one example message" — for the Manager-wide system status
+ * pill/dialog and the FO shell's own-writes sync banner, both of which are
+ * deliberately collection-agnostic ("is sync healthy overall"), unlike a
+ * page gating its OWN render on one specific collection's data. */
 export function getSyncError(): string | null {
-  return lastSyncError;
+  const first = collectionSyncErrors.values().next();
+  return first.done ? null : first.value;
 }
 
 /** Shared by both write failures (drainOutbox, below) and realtime listener
@@ -66,15 +83,22 @@ export function getSyncError(): string | null {
  * real rejection while online must surface as SYNC ERROR, never be
  * swallowed silently (the earlier failure mode: a denied listener just
  * left a collection permanently empty with no visible sign anything was
- * wrong). */
-export function reportSyncError(message: string): void {
-  lastSyncError = message;
+ * wrong), and never bleed into a DIFFERENT collection's status (the later
+ * failure mode: an unrelated collection's expected-by-role denial made an
+ * otherwise-working page show "permission denied" forever). */
+export function reportSyncError(collection: CollectionName, message: string): void {
+  collectionSyncErrors.set(collection, message);
   notifyChange();
 }
 
-export function clearSyncError(): void {
-  if (lastSyncError) {
-    lastSyncError = null;
+/** Omit `collection` to clear every collection's error at once (used when
+ * going back online, where any previously-queued failures are about to be
+ * retried from scratch). */
+export function clearSyncError(collection?: CollectionName): void {
+  if (collection) {
+    if (collectionSyncErrors.delete(collection)) notifyChange();
+  } else if (collectionSyncErrors.size > 0) {
+    collectionSyncErrors.clear();
     notifyChange();
   }
 }
@@ -106,10 +130,10 @@ export async function drainOutbox(backend: RemoteBackend): Promise<void> {
       if (entry.data === null) await backend.deleteDoc(entry.collection, entry.id);
       else await backend.putDoc(entry.collection, entry.id, entry.data);
       await del(key);
-      clearSyncError();
+      clearSyncError(entry.collection);
     } catch (err) {
       if (!navigator.onLine) break; // lost connectivity mid-drain — not an error
-      reportSyncError(describeError(err));
+      reportSyncError(entry.collection, describeError(err));
       break;
     }
   }

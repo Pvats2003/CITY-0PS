@@ -28,36 +28,31 @@ export const firebaseBackend: RemoteBackend = {
     const ref =
       name === "activity" ? query(collection(db, name), orderBy("at", "desc"), limit(ACTIVITY_LISTEN_LIMIT)) : collection(db, name);
 
-    // TEMPORARY production diagnostic — logs the EXACT Firestore operation,
-    // path, and project this client is issuing, at the moment it's issued
-    // (not inferred). Answers "is this a getDoc/getDocs/onSnapshot(collection)
-    // /onSnapshot(query)" and "which project/database" directly, since a
-    // wrong-project env var or a listener/query mismatch would otherwise be
-    // invisible from application code alone. Safe to delete once resolved.
-    if (name === "fos") {
-      console.info("[CITY-OPS-DIAG] subscribing fos", {
-        operation: "onSnapshot(collection(db, 'fos'))",
-        path: "/fos",
-        projectId: app.options.projectId,
-        authDomain: app.options.authDomain,
-      });
-    }
+    // TEMPORARY production diagnostics — primitive values only (never a
+    // collapsed object a screenshot can't show the contents of). Every
+    // collection this client subscribes to, not just fos: identifying
+    // WHICH collection is denied is the whole point when the app subscribes
+    // to several. Answers exactly what operation/path/project this client
+    // issued, and, on success or failure, exactly what came back. Safe to
+    // delete once resolved.
+    console.log("[CITY-OPS-DIAG] subscribing collection=" + name + " path=/" + name + " projectId=" + app.options.projectId);
 
     return onSnapshot(
       ref,
       (snap) => {
-        // TEMPORARY production diagnostic for the fos-resolution
-        // investigation — proves definitively which id each fos document
-        // actually carries: the Firestore document ID (snap doc.id) is
-        // deliberately NOT used for matching anywhere in this app (see
-        // FOExecution.tsx) — only the app-level `id` field inside the
-        // document's own data is. This confirms that at the source, not by
-        // inference. Safe to delete once resolved.
+        console.log("[CITY-OPS-DIAG] listener success collection=" + name + " count=" + snap.docs.length);
         if (name === "fos") {
-          console.info(
-            "[CITY-OPS-DIAG] fos snapshot received",
-            snap.docs.map((d) => ({ firestoreDocId: d.id, dataId: (d.data() as { id?: unknown }).id })),
-          );
+          // Proves definitively which id each fos document actually
+          // carries: the Firestore document ID (snap doc.id) is
+          // deliberately NOT used for matching anywhere in this app (see
+          // FOExecution.tsx) — only the app-level `id` field inside the
+          // document's own data is.
+          snap.docs.forEach((d, i) => {
+            const dataId = (d.data() as { id?: unknown }).id;
+            console.log(
+              "[CITY-OPS-DIAG] fos doc[" + i + "] firestoreDocId=" + d.id + " dataId=" + JSON.stringify(dataId) + " dataIdType=" + typeof dataId,
+            );
+          });
         }
         cb(snap.docs.map((d) => d.data() as never));
       },
@@ -66,16 +61,10 @@ export const firebaseBackend: RemoteBackend = {
         // to the console — the collection would go silently, permanently
         // empty with no visible sign anything was wrong (the "blank UI from
         // an unhandled permission-denied error" failure mode). Route it into
-        // the same SYNC ERROR surface as write failures instead.
-        if (name === "fos") {
-          console.info("[CITY-OPS-DIAG] fos listener error", {
-            path: "/fos",
-            code: (err as { code?: string }).code,
-            message: err.message,
-            projectId: app.options.projectId,
-          });
-        }
-        reportSyncError(describeError(err));
+        // the same per-collection SYNC ERROR surface as write failures.
+        const code = (err as { code?: string }).code ?? "unknown";
+        console.log("[CITY-OPS-DIAG] listener error collection=" + name + " code=" + code + " message=" + JSON.stringify(err.message));
+        reportSyncError(name, describeError(err));
       },
     );
   },

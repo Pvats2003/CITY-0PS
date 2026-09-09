@@ -39,6 +39,16 @@ import type { Assignment } from "@/types";
 
 type BottomTab = "today" | "sessions" | "issues" | "profile";
 
+/** The complete FO-resolution state machine, in the exact order it's
+ * evaluated: no signed-in user at all first (defensive — RequireRole
+ * already prevents reaching this component without one, in practice);
+ * then a live sync error on `fos` (checked before "loading" — a denied
+ * listener never delivers a snapshot, so checking loading first would
+ * mask the error behind an infinite spinner forever); then still-loading;
+ * then a profile missing foId; then a foId that doesn't match any loaded
+ * FieldOfficer; then success. */
+type FoScreen = "profile-missing" | "permission-error" | "loading" | "foId-missing" | "fo-not-found" | "ready";
+
 export default function FOExecution() {
   // /field-officers/:id/execute (manager preview) supplies id via the URL;
   // /fo (the FO's own login) has no id param — it's resolved from their
@@ -53,8 +63,11 @@ export default function FOExecution() {
   // entirely, so a document's own Firestore doc ID is never even available
   // here to match against by mistake.
   const fo = data.fos.find((f) => f.id === id);
-  const fosSyncStatus = useCollectionSyncStatus("fos");
-  const syncStatus = useSyncStatus();
+  // Scoped to the ONE collection this page actually depends on — a denied
+  // listener on a collection this page never reads (Manager-only or
+  // otherwise) must never surface here. See useCollectionSyncStatus.ts /
+  // outbox.ts's per-collection error map.
+  const fosSync = useCollectionSyncStatus("fos");
   const date = todayISO();
   const [tab, setTab] = useState<BottomTab>("today");
   const [selected, setSelected] = useState<string | null>(null);
@@ -71,55 +84,77 @@ export default function FOExecution() {
     [data.assignments, id, date],
   );
 
-  // TEMPORARY production diagnostic (see firebaseAuth.ts's prodDiag) — logs
-  // once per real change, not on the 1s tick above, so it stays quiet. Only
-  // fires for the FO's own login (never the manager-preview path). Fires on
-  // every resolution attempt, success or failure — a second entry shortly
-  // after the first is expected and NOT a bug: fosSyncStatus and
-  // syncStatus.status are two independently-updating signals (one from
-  // syncEngine's synced-collections tracking, one from the outbox's
-  // sync-error tracking), so a snapshot arriving and an earlier error
-  // clearing land as two separate React state updates, each satisfying
-  // this effect's own dependency change — not React StrictMode (which only
-  // double-invokes in development; this fires in production builds too)
-  // and not a duplicate subscription. Only ever logs ids/counts, never
-  // anything sensitive. Safe to delete once resolved.
+  // One of exactly six values — see the doc comment on FoScreen below.
+  // Order matters and mirrors the render order further down: a live error
+  // is checked before "loading" (a denied listener never delivers a
+  // snapshot, so checking loading first would mask the error behind an
+  // infinite spinner forever), and !user.foId before !fo (fo can only be
+  // undefined "for a good reason" once we know which reason).
+  const screen: FoScreen = params.id
+    ? "ready" // manager-preview path renders its own not-found redirect below; not part of this state machine
+    : !user
+      ? "profile-missing"
+      : fosSync.error
+        ? "permission-error"
+        : fosSync.status === "loading"
+          ? "loading"
+          : !user.foId
+            ? "foId-missing"
+            : !fo
+              ? "fo-not-found"
+              : "ready";
+
+  // TEMPORARY production diagnostics — PRIMITIVE values only, never a
+  // collapsed object a screenshot can't show the contents of. Fires once
+  // per real change (not on the 1s tick above), only for the FO's own
+  // login (never the manager-preview path). A second "FO resolution" entry
+  // shortly after the first is expected and NOT a bug: fosSync and `user`
+  // are two independently-updating signals (one from syncEngine's
+  // synced-collections/error tracking, one from AuthContext), so a
+  // snapshot arriving and an auth-state settling land as two separate
+  // React state updates, each satisfying this effect's own dependency
+  // change — not React StrictMode (which does not double-invoke effects in
+  // a production build) and not a duplicate subscription. Never logs
+  // passwords, tokens, or credentials. Safe to delete once resolved.
   useEffect(() => {
-    if (!params.id) {
-      console.info("[CITY-OPS-DIAG] FO resolution", {
-        t: Math.round(performance.now()),
-        uid: user?.id ?? null,
-        role: user?.role ?? null,
-        requestedFoId: id ?? null,
-        requestedFoIdType: typeof id,
-        hasFoId: Boolean(user?.foId),
-        loadedFoCount: data.fos.length,
-        loadedFoIds: data.fos.map((f) => f.id),
-        matchedFoId: fo?.id ?? null,
-        fosSyncStatus,
-        hasSyncedOnce: fosSyncStatus === "ready",
-        hasSyncError: syncStatus.status === "error",
-        generalSyncStatus: syncStatus.status,
-        generalSyncError: syncStatus.errorMessage,
-      });
-    }
-  }, [fo, params.id, id, user, data.fos, fosSyncStatus, syncStatus.status, syncStatus.errorMessage]);
+    if (params.id) return;
+    console.log(
+      "[CITY-OPS-DIAG] FO resolution",
+      "t=", Math.round(performance.now()),
+      "uid=", user?.id ?? null,
+      "role=", user?.role ?? null,
+      "requestedFoId=", JSON.stringify(id ?? null),
+      "requestedFoIdType=", typeof id,
+      "hasFoId=", Boolean(user?.foId),
+      "fosCount=", data.fos.length,
+      "matchedFoId=", fo?.id ?? null,
+      "hasSyncedOnce=", fosSync.hasSyncedOnce,
+      "syncError=", fosSync.error ?? null,
+    );
+    console.log(
+      "[CITY-OPS-DIAG] FO_STATE",
+      "auth=", user ? "authed" : "unauthed",
+      "profile=", user ? "present" : "missing",
+      "role=", user?.role ?? null,
+      "foId=", JSON.stringify(user?.foId ?? null),
+      "fosSync=", fosSync.status,
+      "fosCount=", data.fos.length,
+      "matchedFo=", fo?.id ?? null,
+      "syncError=", fosSync.error ?? null,
+      "screen=", screen,
+    );
+  }, [fo, params.id, id, user, data.fos, fosSync.status, fosSync.hasSyncedOnce, fosSync.error, screen]);
 
   if (!fo) {
     // Manager preview of a specific FO that no longer exists.
     if (params.id) return <Navigate to="/field-officers" replace />;
 
-    // A genuine sync/permission failure is checked BEFORE "still loading":
-    // a denied listener never delivers a snapshot, so fosSyncStatus would
-    // otherwise stay "loading" forever and mask the error behind an
-    // infinite spinner. Distinct from "not found" — never lumped together,
-    // always with a way to retry or leave.
-    if (syncStatus.status === "error") {
+    if (screen === "permission-error") {
       return (
         <div className="min-h-dvh flex flex-col items-center justify-center gap-3 bg-background text-foreground max-w-md mx-auto border-x border-border p-6 text-center">
           <ShieldAlert className="size-10 text-critical" />
           <div className="text-base font-semibold">Couldn't load your field officer data</div>
-          <p className="text-sm text-muted">{syncStatus.errorMessage ?? "A sync error is preventing your profile from loading."}</p>
+          <p className="text-sm text-muted">{fosSync.error ?? "A sync error is preventing your profile from loading."}</p>
           <div className="flex gap-2">
             <Button variant="secondary" onClick={() => window.location.reload()}>
               <RefreshCw className="size-4" /> Retry
@@ -137,7 +172,7 @@ export default function FOExecution() {
     // here (as the code used to) is exactly what made a correct foId look
     // broken during the brief (or, before the syncEngine fix, permanent)
     // window before the first snapshot arrives.
-    if (fosSyncStatus === "loading") {
+    if (screen === "loading") {
       return (
         <div className="min-h-dvh flex flex-col items-center justify-center gap-3 bg-background text-foreground max-w-md mx-auto border-x border-border p-6 text-center">
           <RefreshCw className="size-8 text-muted animate-spin" />
@@ -152,9 +187,10 @@ export default function FOExecution() {
     // FieldOfficer record — either foId was never set, or it was set to an
     // id that doesn't match anyone in the loaded city. Distinct messages so
     // whoever provisioned the account knows exactly what to fix.
-    const reason = !user?.foId
-      ? "Your account's users/{uid} profile doesn't have a foId set."
-      : `Your account's foId ("${user.foId}") doesn't match any field officer in this city.`;
+    const reason =
+      screen === "foId-missing"
+        ? "Your account's users/{uid} profile doesn't have a foId set."
+        : `Your account's foId ("${user?.foId}") doesn't match any field officer in this city.`;
     return (
       <div className="min-h-dvh flex flex-col items-center justify-center gap-3 bg-background text-foreground max-w-md mx-auto border-x border-border p-6 text-center">
         <UserRound className="size-10 text-muted" />

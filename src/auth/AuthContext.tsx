@@ -80,19 +80,22 @@ export function AuthProviderRoot({ children }: { children: ReactNode }) {
           setStatus("anon");
           break;
         case "signed_in":
-          // TEMPORARY production diagnostic — logs the EXACT object this
-          // context is about to store as `user`, at the moment it receives
-          // it from the active AuthProvider (firebaseAuthProvider in
-          // production). If foId is correct here but a consumer (e.g.
-          // FOExecution) later reports it missing, the bug is downstream of
-          // this line, not upstream of it. Safe to delete once resolved.
-          console.info("[CITY-OPS-DIAG] AuthContext user", {
-            uid: event.user.id,
-            role: event.user.role,
-            foId: event.user.foId,
-            foIdType: typeof event.user.foId,
-            hasFoId: Boolean(event.user.foId),
-          });
+          // TEMPORARY production diagnostic — PRIMITIVE values only,
+          // logged at the exact moment this context is about to store this
+          // object as `user`, at the moment it receives it from the active
+          // AuthProvider (firebaseAuthProvider in production). If foId is
+          // correct here but a consumer (e.g. FOExecution) later reports it
+          // missing, the bug is downstream of this line, not upstream of
+          // it. Safe to delete once resolved.
+          console.log(
+            "[CITY-OPS-DIAG] AuthContext user",
+            "uid=", event.user.id,
+            "role=", JSON.stringify(event.user.role),
+            "foId=", JSON.stringify(event.user.foId),
+            "foIdType=", typeof event.user.foId,
+            "foIdLength=", typeof event.user.foId === "string" ? event.user.foId.length : -1,
+            "hasFoId=", Boolean(event.user.foId),
+          );
           setUser(event.user);
           setPendingSetup(null);
           setAuthError(null);

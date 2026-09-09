@@ -17,16 +17,6 @@ function authLog(...args: unknown[]) {
   if (import.meta.env.DEV) console.debug("[auth]", ...args);
 }
 
-/** TEMPORARY — unlike authLog above, this is NOT DEV-gated: it's here to
- * get real signal from the live production site, where DEV-only logs never
- * fire (Vite bakes import.meta.env.DEV to false in a production build).
- * Only ever prints uid, role, and foId's exact key/value/type as read from
- * Firestore — never email, password, or tokens. Safe to delete once the
- * live "foId reads as missing despite being set in the console" issue is
- * confirmed resolved. */
-function prodDiag(label: string, info: Record<string, unknown>) {
-  console.info(`[CITY-OPS-DIAG] ${label}`, info);
-}
 
 /** Common Firebase Auth error codes mapped to messages a field worker or
  * manager can actually act on, instead of the raw "Firebase: Error
@@ -71,25 +61,35 @@ async function loadAppUser(fbUser: User): Promise<AppUser | null> {
   const docPath = `users/${fbUser.uid}`;
   const snap = await getDoc(doc(db, "users", fbUser.uid));
   authLog("users/", fbUser.uid, "exists =", snap.exists());
-  // Explicit path/existence trace — the doc path is BUILT from
+  // TEMPORARY production diagnostics — PRIMITIVE values only (never a
+  // collapsed object a screenshot can't show the contents of). Not
+  // DEV-gated, unlike authLog above: this is here to get real signal from
+  // the live production site, where DEV-only logs never fire (Vite bakes
+  // import.meta.env.DEV to false in a production build). Never logs email,
+  // password, or tokens. Safe to delete once resolved.
+  //
+  // Explicit path/existence trace first — the doc path is BUILT from
   // fbUser.uid directly (doc(db, "users", fbUser.uid)), so there is no
   // code path here that could read a different uid's document; this
   // confirms that at the source rather than by inference.
-  prodDiag("users/{uid} read", { uid: fbUser.uid, path: docPath, exists: snap.exists() });
+  console.log("[CITY-OPS-DIAG] profile primitive values", "uid=", fbUser.uid, "path=", docPath, "exists=", snap.exists());
   if (!snap.exists()) return null;
   const data = snap.data() as UserDoc;
-  // `keys` is the actual, literal set of field names the SDK read back —
-  // the one thing that definitively rules a field-name mismatch (wrong
-  // case, stray whitespace, a homoglyph typed into the Firebase console) in
-  // or out, which no amount of staring at the console's rendered UI can.
-  prodDiag("users/{uid} profile loaded", {
-    uid: fbUser.uid,
-    keys: Object.keys(data),
-    role: data.role,
-    foId: data.foId,
-    foIdType: typeof data.foId,
-    hasFoId: Boolean(data.foId),
-  });
+  // Object.keys(data) is the actual, literal set of field names the SDK
+  // read back — the one thing that definitively rules a field-name
+  // mismatch (wrong case, stray whitespace, a homoglyph typed into the
+  // Firebase console) in or out, which no amount of staring at the
+  // console's rendered UI can.
+  console.log(
+    "[CITY-OPS-DIAG] profile primitive values",
+    "uid=", fbUser.uid,
+    "role=", JSON.stringify(data.role),
+    "roleType=", typeof data.role,
+    "foId=", JSON.stringify(data.foId),
+    "foIdType=", typeof data.foId,
+    "foIdLength=", typeof data.foId === "string" ? data.foId.length : -1,
+    "keys=", JSON.stringify(Object.keys(data)),
+  );
   // Trim, don't guess: a Console-entered value can pick up incidental
   // leading/trailing whitespace (easy to introduce, invisible in the
   // Console UI, and would otherwise make an exact-match lookup fail). This
@@ -105,18 +105,19 @@ async function loadAppUser(fbUser: User): Promise<AppUser | null> {
     displayName: data.displayName ?? fbUser.displayName ?? undefined,
     createdAt: data.createdAt ?? new Date().toISOString(),
   };
-  // Logged separately from "profile loaded" above (which shows the raw
-  // Firestore data) so a construction-stage bug — foId present in data but
-  // lost while building AppUser — would show up as a mismatch between the
-  // two log lines instead of being invisible.
-  prodDiag("AppUser constructed", {
-    uid: appUser.id,
-    role: appUser.role,
-    foId: appUser.foId,
-    foIdType: typeof appUser.foId,
-    hasFoId: Boolean(appUser.foId),
-    firestoreKeys: Object.keys(data),
-  });
+  // Logged separately from "profile primitive values" above (which shows
+  // the raw Firestore data) so a construction-stage bug — foId present in
+  // data but lost while building AppUser — would show up as a mismatch
+  // between these two adjacent log lines instead of being invisible.
+  console.log(
+    "[CITY-OPS-DIAG] AppUser constructed",
+    "uid=", appUser.id,
+    "role=", JSON.stringify(appUser.role),
+    "foId=", JSON.stringify(appUser.foId),
+    "foIdType=", typeof appUser.foId,
+    "foIdLength=", typeof appUser.foId === "string" ? appUser.foId.length : -1,
+    "hasFoId=", Boolean(appUser.foId),
+  );
   return appUser;
 }
 

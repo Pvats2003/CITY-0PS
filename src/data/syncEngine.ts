@@ -4,7 +4,7 @@ import { waitForAuthReady } from "@/auth/authReady";
 import type { UserRole } from "@/auth/types";
 import { COLLECTION_NAMES, type CollectionName, type RemoteBackend } from "./backend";
 import { localBackend } from "./localBackend";
-import { enqueue, drainOutbox, clearSyncError, getSyncError } from "./outbox";
+import { enqueue, drainOutbox, clearSyncError, getCollectionSyncError } from "./outbox";
 import type { CityStore } from "@/store/city";
 
 /** Mirrors firestore.rules exactly: a Field Officer has an explicit `match`
@@ -101,26 +101,30 @@ export async function startSyncEngine(): Promise<void> {
       useCity.getState().mergeRemoteCollection(name, docs);
       applyingRemoteUpdate = false;
       markSynced(name);
-      // Any successful snapshot proves the connection and this account's
-      // access are fine right now — clear a previously reported error
-      // rather than leaving it to block a UI (like FOExecution's) that
-      // only cares whether ITS collection is working, not whatever failed
-      // earlier. Scoping subscriptions above to what this role can
-      // actually read is what makes this safe: a granted collection's
-      // success no longer needs to coexist with a same-session denial on a
-      // collection this role was never granted in the first place.
-      clearSyncError();
-      // TEMPORARY production diagnostic — the state a moment after this
-      // exact update, so a stale-looking UI can be checked against what the
-      // sync layer actually believes right now. Safe to delete once
-      // resolved.
-      if (name === "fos") {
-        console.info("[CITY-OPS-DIAG] fos sync state", {
-          hasSyncedOnce: hasSyncedOnce("fos"),
-          syncError: getSyncError(),
-          count: docs.length,
-        });
-      }
+      // A successful snapshot on THIS collection proves the connection and
+      // this account's access to THIS collection specifically are fine
+      // right now — clear only this collection's own error. Deliberately
+      // NOT clearing every collection's error here: a genuine, still-live
+      // denial on a different collection must keep showing wherever it's
+      // relevant (the Manager-wide status pill), while a page that only
+      // cares about this one collection (like FOExecution and `fos`) reads
+      // getCollectionSyncError(name) directly and was never affected by an
+      // unrelated collection's error to begin with.
+      clearSyncError(name);
+      // TEMPORARY production diagnostic — primitive values, the state a
+      // moment after this exact update, so a stale-looking UI can be
+      // checked against what the sync layer actually believes right now.
+      // Safe to delete once resolved.
+      console.log(
+        "[CITY-OPS-DIAG] collection sync state collection=" +
+          name +
+          " hasSyncedOnce=" +
+          hasSyncedOnce(name) +
+          " error=" +
+          JSON.stringify(getCollectionSyncError(name)) +
+          " count=" +
+          docs.length,
+      );
     });
   }
 
