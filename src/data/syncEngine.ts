@@ -1,10 +1,29 @@
 import { useCity } from "@/store/city";
 import { isFirebaseConfigured } from "@/auth/config";
 import { waitForAuthReady } from "@/auth/authReady";
+import type { UserRole } from "@/auth/types";
 import { COLLECTION_NAMES, type CollectionName, type RemoteBackend } from "./backend";
 import { localBackend } from "./localBackend";
-import { enqueue, drainOutbox } from "./outbox";
+import { enqueue, drainOutbox, clearSyncError, getSyncError } from "./outbox";
 import type { CityStore } from "@/store/city";
+
+/** Mirrors firestore.rules exactly: a Field Officer has an explicit `match`
+ * block granting read on only these 8 collections; the rest (collectors,
+ * evidence, qualityReviews, correctiveActions, repairRecords, plans,
+ * reports) fall through to the Manager-only wildcard rule. Subscribing an
+ * FO to those anyway is a request Firestore will always deny by design —
+ * not a rules bug, but doing it anyway poisons the shared sync-error state
+ * with an expected denial, masking whether collections the FO IS granted
+ * (like fos) are actually working. Keep in sync with firestore.rules if
+ * that file's FO grants ever change. */
+const FIELD_OFFICER_COLLECTIONS: CollectionName[] = ["fos", "businesses", "rigs", "assignments", "sessions", "issues", "rigIncidents", "activity"];
+
+function collectionsForRole(role: UserRole | null): CollectionName[] {
+  // null (role unresolved — demo mode, or the profile read failed) falls
+  // back to every collection, the historical role-blind behavior, rather
+  // than silently under-subscribing a Manager.
+  return role === "FIELD_OFFICER" ? FIELD_OFFICER_COLLECTIONS : COLLECTION_NAMES;
+}
 
 const SYNCED_CHANGE_EVENT = "city-ops-synced-collections-change";
 const syncedCollections = new Set<CollectionName>();
@@ -62,24 +81,46 @@ export async function startSyncEngine(): Promise<void> {
     return; // demo mode: no subscriptions, no outbox draining, zero network
   }
 
-  // Wait for a real signed-in identity before attaching any listener. Every
-  // shared collection's rules require isSignedIn() — subscribing while
-  // signed out gets denied immediately, and the Firestore SDK tears down
-  // (never retries) a listener that's been denied once, even after the
-  // user then signs in. Without this, a collection subscribed on an
-  // unauthenticated first page load (e.g. /fo/login, before the sign-in
-  // form is even submitted) can stay permanently empty for the rest of the
-  // session — the concrete cause of "FO record not found" despite a
-  // correct foId and a matching fos/{doc}.
-  await waitForAuthReady();
+  // Wait for a real signed-in identity (and, on the real Firebase path,
+  // their role) before attaching any listener. Every shared collection's
+  // rules require isSignedIn() — subscribing while signed out gets denied
+  // immediately, and the Firestore SDK tears down (never retries) a
+  // listener that's been denied once, even after the user then signs in.
+  // Without this, a collection subscribed on an unauthenticated first page
+  // load (e.g. /fo/login, before the sign-in form is even submitted) can
+  // stay permanently empty for the rest of the session — the concrete
+  // cause of "FO record not found" despite a correct foId and a matching
+  // fos/{doc}.
+  const { role } = await waitForAuthReady();
+  const collectionsToSync = collectionsForRole(role);
 
   // Remote -> local: each collection's current document set replaces ours.
-  for (const name of COLLECTION_NAMES) {
+  for (const name of collectionsToSync) {
     backend.subscribeCollection(name, (docs) => {
       applyingRemoteUpdate = true;
       useCity.getState().mergeRemoteCollection(name, docs);
       applyingRemoteUpdate = false;
       markSynced(name);
+      // Any successful snapshot proves the connection and this account's
+      // access are fine right now — clear a previously reported error
+      // rather than leaving it to block a UI (like FOExecution's) that
+      // only cares whether ITS collection is working, not whatever failed
+      // earlier. Scoping subscriptions above to what this role can
+      // actually read is what makes this safe: a granted collection's
+      // success no longer needs to coexist with a same-session denial on a
+      // collection this role was never granted in the first place.
+      clearSyncError();
+      // TEMPORARY production diagnostic — the state a moment after this
+      // exact update, so a stale-looking UI can be checked against what the
+      // sync layer actually believes right now. Safe to delete once
+      // resolved.
+      if (name === "fos") {
+        console.info("[CITY-OPS-DIAG] fos sync state", {
+          hasSyncedOnce: hasSyncedOnce("fos"),
+          syncError: getSyncError(),
+          count: docs.length,
+        });
+      }
     });
   }
 
@@ -99,7 +140,7 @@ export async function startSyncEngine(): Promise<void> {
         return;
       }
       const queued: Promise<void>[] = [];
-      for (const name of COLLECTION_NAMES) {
+      for (const name of collectionsToSync) {
         const prevArr = prev[name] as { id: string }[];
         const nextArr = state[name] as { id: string }[];
         if (prevArr === nextArr) continue;

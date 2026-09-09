@@ -73,22 +73,32 @@ export default function FOExecution() {
 
   // TEMPORARY production diagnostic (see firebaseAuth.ts's prodDiag) — logs
   // once per real change, not on the 1s tick above, so it stays quiet. Only
-  // fires for the FO's own login (never the manager-preview path), and only
-  // ever logs ids/counts, never anything sensitive. Safe to delete once the
-  // live "foId reads as missing/mismatched" issue is confirmed resolved.
+  // fires for the FO's own login (never the manager-preview path). Fires on
+  // every resolution attempt, success or failure — a second entry shortly
+  // after the first is expected and NOT a bug: fosSyncStatus and
+  // syncStatus.status are two independently-updating signals (one from
+  // syncEngine's synced-collections tracking, one from the outbox's
+  // sync-error tracking), so a snapshot arriving and an earlier error
+  // clearing land as two separate React state updates, each satisfying
+  // this effect's own dependency change — not React StrictMode (which only
+  // double-invokes in development; this fires in production builds too)
+  // and not a duplicate subscription. Only ever logs ids/counts, never
+  // anything sensitive. Safe to delete once resolved.
   useEffect(() => {
-    if (!fo && !params.id) {
+    if (!params.id) {
       console.info("[CITY-OPS-DIAG] FO resolution", {
         requestedFoId: id,
-        userFoId: user?.foId,
-        fosSyncStatus,
+        matchedFoId: fo?.id ?? null,
         loadedFoCount: data.fos.length,
         loadedFoIds: data.fos.map((f) => f.id),
+        fosSyncStatus,
+        hasSyncedOnce: fosSyncStatus === "ready",
+        hasSyncError: syncStatus.status === "error",
         generalSyncStatus: syncStatus.status,
         generalSyncError: syncStatus.errorMessage,
       });
     }
-  }, [fo, params.id, id, user?.foId, data.fos, fosSyncStatus, syncStatus.status, syncStatus.errorMessage]);
+  }, [fo, params.id, id, data.fos, fosSyncStatus, syncStatus.status, syncStatus.errorMessage]);
 
   if (!fo) {
     // Manager preview of a specific FO that no longer exists.
