@@ -335,6 +335,12 @@ export default function FOExecution() {
 
       <SyncStatusBanner />
 
+      {!params.id && (
+        <div className="px-3 pt-2">
+          <FoDiagnosticPanel requestedFoId={id} matchedFoId={fo.id} matchedFoName={fo.name} fosCount={data.fos.length} fosSync={fosSync} screen={screen} />
+        </div>
+      )}
+
       <main className="flex-1 overflow-y-auto pb-2">
         {tab === "today" && (
           selectedAssignment ? (
