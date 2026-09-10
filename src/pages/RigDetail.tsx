@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useParams, Link, Navigate } from "react-router-dom";
 import { ArrowLeft, Pencil, AlertTriangle, TrendingDown, Wrench, ShieldQuestion, ClipboardList, Archive, XCircle, ImageOff } from "lucide-react";
 import { useCity } from "@/store/city";
+import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -10,14 +11,23 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ActivityTimeline } from "@/components/shared/ActivityTimeline";
 import { RigHealthCard } from "@/components/rigs/RigHealthCard";
 import { RigReadinessBadge } from "@/components/rigs/RigReadinessBadge";
+import { RigDeployabilityBadge } from "@/components/rigs/RigDeployabilityBadge";
 import { RigFormDialog } from "@/components/forms/RigFormDialog";
 import { RigIncidentFormDialog } from "@/components/forms/RigIncidentFormDialog";
 import { RepairRecordFormDialog } from "@/components/forms/RepairRecordFormDialog";
 import { PostRepairTestDialog } from "@/components/forms/PostRepairTestDialog";
-import { fmtDateTime, fmtHours } from "@/lib/dates";
+import { fmtDateTime, fmtHours, todayISO } from "@/lib/dates";
 import { buildRigSummary, assessRetirement } from "@/engine/rigGuardian";
 import { advanceRigIncidentStatus, retireRig, setRigStatusOverride } from "@/engine/workflows";
-import { categoryLabel, DISCOVERY_STAGE_LABELS, RIG_DEPLOYMENT_STATUS_LABELS, RIG_INCIDENT_STATUS_LABELS, RIG_READINESS_LABELS } from "@/engine/rigTaxonomy";
+import {
+  categoryLabel,
+  DISCOVERY_STAGE_LABELS,
+  RIG_DEPLOYMENT_STATUS_LABELS,
+  RIG_INCIDENT_STATUS_LABELS,
+  RIG_READINESS_LABELS,
+  isBlockingCategory,
+  toDeployability,
+} from "@/engine/rigTaxonomy";
 import type { RigIncident, RigReadinessStatus } from "@/types";
 
 export default function RigDetail() {
@@ -46,8 +56,17 @@ export default function RigDetail() {
     () => data.activity.filter((e) => e.rigId === id).sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()),
     [data.activity, id],
   );
+  const currentBusinesses = useMemo(() => {
+    const today = todayISO();
+    const bizIds = new Set(
+      data.assignments.filter((a) => a.rigId === id && a.date === today && a.status !== "cancelled").map((a) => a.businessId),
+    );
+    return [...bizIds].map((bid) => data.businesses.find((b) => b.id === bid)?.name).filter((n): n is string => !!n);
+  }, [data.assignments, data.businesses, id]);
 
   if (!rig || !summary) return <Navigate to="/fleet" replace />;
+
+  const deployability = toDeployability(summary.readiness);
 
   function applyOverride() {
     setRigStatusOverride(rig!.id, overrideStatus === "none" ? undefined : overrideStatus, overrideReason.trim() || undefined);
@@ -101,6 +120,54 @@ export default function RigDetail() {
 
       <div className="px-4 md:px-6 pt-5 grid grid-cols-1 xl:grid-cols-3 gap-5">
         <div className="xl:col-span-2 space-y-5">
+          {/* Deployment status — "can this rig be deployed right now?",
+              answered purely from currently-open rig issues (no battery/
+              temperature/CPU/signal telemetry exists in this system). */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Deployment Status</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0 space-y-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <div>
+                  <div className="text-[11px] text-muted">Rig</div>
+                  <div className="text-sm font-semibold">{rig.code}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-muted">Business</div>
+                  <div className="text-sm font-semibold">{currentBusinesses.length > 0 ? currentBusinesses.join(", ") : "Not currently assigned"}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-muted">Current Status</div>
+                  <RigDeployabilityBadge status={deployability} className="mt-0.5" />
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold text-muted mb-1.5">Open Issues</div>
+                {summary.openIncidents.length === 0 ? (
+                  <div className="text-sm text-success">No open issues.</div>
+                ) : (
+                  <ul className="space-y-1 text-sm">
+                    {summary.openIncidents.map((inc) => (
+                      <li key={inc.id} className="flex items-center gap-1.5">
+                        <span>{inc.severity === "critical" || isBlockingCategory(inc.category) ? "\u{1F534}" : "\u{1F7E0}"}</span>
+                        {categoryLabel(inc.category)}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="border-t border-border pt-2.5 flex items-center justify-between text-sm">
+                <span className="text-muted">Deployment</span>
+                <span className={cn("font-semibold", deployability === "BLOCKED" ? "text-critical" : deployability === "AT_RISK" ? "text-warning" : "text-success")}>
+                  {deployability === "BLOCKED" ? "Not recommended" : deployability === "AT_RISK" ? "Use with caution" : "Recommended"}
+                </span>
+              </div>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle>Rig Health</CardTitle>

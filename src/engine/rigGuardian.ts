@@ -1,7 +1,7 @@
 import type { CityData, DamageGroup, Rig, RigIncident, RigReadinessStatus, Severity } from "@/types";
 import { todayISO } from "@/lib/dates";
 import { overlaps } from "./selectors";
-import { DAMAGE_GROUP_LABELS, categoryLabel } from "./rigTaxonomy";
+import { DAMAGE_GROUP_LABELS, categoryLabel, isBlockingCategory } from "./rigTaxonomy";
 import { recentEvidenceSignalsForRig, type RigEvidenceSignal } from "./execution";
 
 // ---------------------------------------------------------------------------
@@ -150,22 +150,28 @@ export function computeRigHealth(data: CityData, rig: Rig): RigHealth {
   return { score, breakdown, categories };
 }
 
-function worstDeltaReason(breakdown: ScoreDelta[]): string {
-  const negatives = [...breakdown].filter((d) => d.delta < 0).sort((a, b) => a.delta - b.delta);
-  if (negatives.length === 0) return "Operating within normal parameters.";
-  return `${negatives[0].label}.`;
-}
-
 export interface RigReadiness {
   status: RigReadinessStatus;
   reason: string;
   overridden: boolean;
 }
 
-/** Combines manual overrides, lifecycle status, unresolved critical
- * incidents, and the health score into one readiness verdict. Order of
- * precedence matches spec #4. */
-export function deriveRigReadiness(data: CityData, rig: Rig, health: RigHealth): RigReadiness {
+const SEVERITY_RANK: Record<Severity, number> = { critical: 3, warning: 2, attention: 1, opportunity: 0 };
+
+/** Combines manual overrides, lifecycle status, and currently-OPEN rig
+ * issues into one readiness verdict — no rig telemetry exists in this
+ * system (no battery/temperature/CPU/GPS/signal feed), so deployability is
+ * never inferred from anything but real, current operational facts. Order
+ * of precedence matches spec #4: lifecycle and manual override always win;
+ * otherwise an open issue in BLOCKING_DAMAGE_CATEGORIES (or reported
+ * critical severity, regardless of category) makes the rig BLOCKED
+ * (do_not_deploy); any other open issue makes it AT_RISK (watch); no open
+ * issues at all means READY (healthy). The rig's historical health SCORE
+ * (computeRigHealth, above) is a separate reliability metric — useful for
+ * fleet ranking and retirement decisions — and deliberately does not gate
+ * deployability by itself: a rig with a rough history but zero open issues
+ * right now can still be deployed today. */
+export function deriveRigReadiness(data: CityData, rig: Rig): RigReadiness {
   if (rig.deploymentStatus === "retired") {
     return { status: "do_not_deploy", reason: "Rig has been retired.", overridden: false };
   }
@@ -178,14 +184,16 @@ export function deriveRigReadiness(data: CityData, rig: Rig, health: RigHealth):
   if (rig.statusOverride) {
     return { status: rig.statusOverride, reason: rig.statusOverrideReason || "Manually set by operator.", overridden: true };
   }
-  const criticalOpen = incidentsForRig(data, rig.id).find((i) => i.severity === "critical" && OPEN_STATUSES.has(i.status));
-  if (criticalOpen) {
-    return { status: "do_not_deploy", reason: `${categoryLabel(criticalOpen.category)} reported.`, overridden: false };
+  const openIncidents = incidentsForRig(data, rig.id).filter((i) => OPEN_STATUSES.has(i.status));
+  const blocking = openIncidents.find((i) => i.severity === "critical" || isBlockingCategory(i.category));
+  if (blocking) {
+    return { status: "do_not_deploy", reason: `${categoryLabel(blocking.category)} reported.`, overridden: false };
   }
-  if (health.score >= 80) return { status: "healthy", reason: "Healthy operating history.", overridden: false };
-  if (health.score >= 60) return { status: "watch", reason: worstDeltaReason(health.breakdown), overridden: false };
-  if (health.score >= 40) return { status: "inspection_required", reason: worstDeltaReason(health.breakdown), overridden: false };
-  return { status: "do_not_deploy", reason: worstDeltaReason(health.breakdown), overridden: false };
+  if (openIncidents.length > 0) {
+    const worst = [...openIncidents].sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity])[0];
+    return { status: "watch", reason: `${categoryLabel(worst.category)} reported.`, overridden: false };
+  }
+  return { status: "healthy", reason: "No open issues.", overridden: false };
 }
 
 export function isDeployable(status: RigReadinessStatus): boolean {
@@ -332,7 +340,7 @@ export interface RigSummary {
 
 export function buildRigSummary(data: CityData, rig: Rig): RigSummary {
   const health = computeRigHealth(data, rig);
-  const readiness = deriveRigReadiness(data, rig, health);
+  const readiness = deriveRigReadiness(data, rig);
   const incidents = incidentsForRig(data, rig.id);
   const incidentCount30d = incidents.filter((i) => new Date(i.discoveredAt).getTime() >= daysAgo(RIG_SCORE_CONFIG.lookbackDays)).length;
   const openIncidents = incidents.filter((i) => OPEN_STATUSES.has(i.status)).sort((a, b) => new Date(b.discoveredAt).getTime() - new Date(a.discoveredAt).getTime());

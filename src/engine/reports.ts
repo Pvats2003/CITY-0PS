@@ -4,6 +4,7 @@ import { computeLostHours } from "./lostHours";
 import { computeCityHealth } from "./health";
 import { buildRigSummary, isDeployable, needsInspection } from "./rigGuardian";
 import { DAMAGE_GROUP_LABELS } from "./rigTaxonomy";
+import { cityTargetHoursForDate } from "./insights";
 
 export interface SODReport {
   date: string;
@@ -16,7 +17,10 @@ export interface SODReport {
   actions: string[];
 }
 
-export function buildSOD(data: CityData, date: string, targetHours: number): SODReport {
+export function buildSOD(data: CityData, date: string): SODReport {
+  // Not a fixed constant — the sum of every planned business's own target
+  // (rigs deployed there today × 10h). See insights.ts.
+  const targetHours = cityTargetHoursForDate(data, date);
   const assignments = assignmentsForDate(data, date).filter((a) => a.status !== "cancelled");
   const bizMap = new Map(data.businesses.map((b) => [b.id, b]));
   const foMap = new Map(data.fos.map((f) => [f.id, f]));
@@ -81,7 +85,8 @@ export interface MODReport {
   projectedAchievementPct: number;
 }
 
-export function buildMOD(data: CityData, date: string, targetHours: number): MODReport {
+export function buildMOD(data: CityData, date: string): MODReport {
+  const targetHours = cityTargetHoursForDate(data, date);
   const assignments = assignmentsForDate(data, date).filter((a) => a.status !== "cancelled");
   const completed = assignments.filter((a) => a.status === "completed");
   const active = assignments.filter((a) => a.status === "in_progress");
@@ -141,12 +146,13 @@ export interface EODReport {
   narrative: string;
 }
 
-export function buildEOD(data: CityData, date: string, targetHours: number): EODReport {
+export function buildEOD(data: CityData, date: string): EODReport {
+  const targetHours = cityTargetHoursForDate(data, date);
   const assignments = assignmentsForDate(data, date).filter((a) => a.status !== "cancelled");
   const completed = assignments.filter((a) => a.status === "completed");
   const recordingHours = recordedHoursForDate(data, date);
   const lostHours = computeLostHours(data, date);
-  const health = computeCityHealth(data, date, targetHours);
+  const health = computeCityHealth(data, date);
 
   const sessionIds = data.sessions.filter((s) => s.date === date).map((s) => s.id);
   const reviews = data.qualityReviews.filter((q) => sessionIds.includes(q.sessionId));

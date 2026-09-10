@@ -166,7 +166,7 @@ const rules: Rule[] = [
   {
     test: (q) => /recording hours.*today|today.*recording hours|how many hours/.test(q),
     run: (data) => {
-      const eod = buildEOD(data, todayISO(), data.settings.recordingHoursTargetPerDay);
+      const eod = buildEOD(data, todayISO());
       return { kind: "data", answer: `${eod.recordingHours.toFixed(1)}h recorded today of a ${eod.targetHours}h target (${eod.achievementPct}%).` };
     },
   },
@@ -208,7 +208,7 @@ const rules: Rule[] = [
   {
     test: (q) => /eod|end of day/.test(q),
     run: (data) => {
-      const eod = buildEOD(data, todayISO(), data.settings.recordingHoursTargetPerDay);
+      const eod = buildEOD(data, todayISO());
       return { kind: "data", answer: eod.narrative, links: [{ label: "Open EOD report", to: "/reports?tab=eod" }] };
     },
   },

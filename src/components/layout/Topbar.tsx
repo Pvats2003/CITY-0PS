@@ -18,7 +18,7 @@ export function Topbar() {
   const updateSettings = useCity((s) => s.updateSettings);
   const setPaletteOpen = useUI((s) => s.setPaletteOpen);
   const date = todayISO();
-  const health = computeCityHealth(data, date, data.settings.recordingHoursTargetPerDay);
+  const health = computeCityHealth(data, date);
   const status = healthStatus(health.score);
 
   const ThemeIcon = data.settings.theme === "dark" ? Moon : data.settings.theme === "light" ? Sun : Laptop;

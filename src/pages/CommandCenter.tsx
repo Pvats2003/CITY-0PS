@@ -20,6 +20,7 @@ import {
 import { useCity } from "@/store/city";
 import { todayISO, fmtHours, fmtDate } from "@/lib/dates";
 import { computeCityHealth, healthStatus } from "@/engine/health";
+import { cityTargetHoursForDate } from "@/engine/insights";
 import { buildAttentionFeed } from "@/engine/attention";
 import { computeLostHours } from "@/engine/lostHours";
 import { buildTomorrowRecommendations } from "@/engine/reports";
@@ -32,6 +33,7 @@ import { AttentionList } from "@/components/shared/AttentionList";
 import { ActivityTimeline } from "@/components/shared/ActivityTimeline";
 import { StatusBadge } from "@/components/status";
 import { RigReadinessBadge } from "@/components/rigs/RigReadinessBadge";
+import { toDeployability } from "@/engine/rigTaxonomy";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -44,8 +46,10 @@ export default function CommandCenter() {
   const [addBusinessOpen, setAddBusinessOpen] = useState(false);
   const [reportIssueOpen, setReportIssueOpen] = useState(false);
 
-  const target = data.settings.recordingHoursTargetPerDay;
-  const health = useMemo(() => computeCityHealth(data, date, target), [data, date, target]);
+  // Not a fixed constant — the sum of every business's own target for
+  // today (rigs deployed there today × 10h). See engine/insights.ts.
+  const target = useMemo(() => cityTargetHoursForDate(data, date), [data, date]);
+  const health = useMemo(() => computeCityHealth(data, date), [data, date]);
   const attention = useMemo(() => buildAttentionFeed(data, date), [data, date]);
   const lostHours = useMemo(() => computeLostHours(data, date), [data, date]);
   const tomorrowRecs = useMemo(() => buildTomorrowRecommendations(data, date), [data, date]);
@@ -53,6 +57,15 @@ export default function CommandCenter() {
   const fleetReadiness = useMemo(() => buildFleetReadiness(data, date, fleetSummaries), [data, date, fleetSummaries]);
   const fleetLostHours = useMemo(() => computeRigLostHours(data, undefined, date), [data, date]);
   const riskyRigs = useMemo(() => fleetSummaries.filter((s) => s.readiness !== "healthy").slice(0, 4), [fleetSummaries]);
+  // Issue-based fleet summary — no rig telemetry exists in this system, so
+  // deployability is purely "how many currently-open, unresolved issues
+  // does each rig have, and how severe are they" (see rigGuardian.ts's
+  // deriveRigReadiness / rigTaxonomy.ts's toDeployability).
+  const deployCounts = useMemo(() => {
+    const counts = { READY: 0, AT_RISK: 0, BLOCKED: 0 };
+    for (const s of fleetSummaries) counts[toDeployability(s.readiness)] += 1;
+    return counts;
+  }, [fleetSummaries]);
   const execution = useMemo(() => buildCityExecutionSummary(data, date), [data, date]);
 
   const assignments = assignmentsForDate(data, date);
@@ -279,6 +292,13 @@ export default function CommandCenter() {
             </Button>
           </CardHeader>
           <CardContent className="pt-0">
+            <div className="flex flex-wrap items-center gap-3 mb-3 text-sm">
+              <span className="text-muted">Fleet</span>
+              <span className="font-semibold tabular-nums">{fleetSummaries.length} rig{fleetSummaries.length === 1 ? "" : "s"}</span>
+              <span className="text-success font-semibold tabular-nums">{deployCounts.READY} READY</span>
+              <span className="text-warning font-semibold tabular-nums">{deployCounts.AT_RISK} AT RISK</span>
+              <span className="text-critical font-semibold tabular-nums">{deployCounts.BLOCKED} BLOCKED</span>
+            </div>
             <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
               <div className={`flex items-center gap-2 text-sm font-semibold ${fleetReadiness.status === "ready" ? "text-success" : "text-critical"}`}>
                 {fleetReadiness.status === "ready" ? <ShieldCheck className="size-4" /> : <ShieldAlert className="size-4" />}

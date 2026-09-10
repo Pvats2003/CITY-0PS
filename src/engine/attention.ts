@@ -22,7 +22,6 @@ export function buildAttentionFeed(data: CityData, date: string): AttentionItem[
   const items: AttentionItem[] = [];
   const bizMap = new Map(data.businesses.map((b) => [b.id, b]));
   const foMap = new Map(data.fos.map((f) => [f.id, f]));
-  const rigMap = new Map(data.rigs.map((r) => [r.id, r]));
   const now = Date.now();
   const assignments = assignmentsForDate(data, date);
 
@@ -89,35 +88,16 @@ export function buildAttentionFeed(data: CityData, date: string): AttentionItem[
     }
   }
 
-  // 3) low battery / device concerns on active sessions
-  for (const s of data.sessions.filter((s) => s.status === "active")) {
-    const rig = s.rigId ? rigMap.get(s.rigId) : undefined;
-    const biz = bizMap.get(s.businessId);
-    if (s.batteryPct < 30) {
-      items.push({
-        id: `battery-${s.id}`,
-        severity: s.batteryPct < 15 ? "critical" : "warning",
-        title: `Rig ${rig?.code ?? ""} battery below expected level (${s.batteryPct}%)`,
-        reason: `Active session at ${biz?.name ?? "business"} is running low on battery.`,
-        entityLabel: rig?.code ?? "Rig",
-        at: s.startedAt,
-        actions: [{ label: "View rig", to: rig ? `/sessions/${s.id}` : "/sessions" }],
-      });
-    }
-    if (s.signal === "intermittent") {
-      items.push({
-        id: `signal-${s.id}`,
-        severity: "attention",
-        title: `Signal intermittent at ${biz?.name ?? "business"}`,
-        reason: "Network/signal quality has been unstable during this session.",
-        entityLabel: biz?.name ?? "Business",
-        at: s.startedAt,
-        actions: [{ label: "View session", to: `/sessions/${s.id}` }],
-      });
-    }
-  }
+  // (Battery/signal-based attention items were removed here: there is no
+  // real telemetry source for a rig's battery or network signal in this
+  // system — Session.batteryPct/storagePct/signal are never populated from
+  // an actual device, so surfacing them as Manager-facing alerts would be
+  // exactly the fabricated-condition problem the operational model spec
+  // warns against. A rig's real operational condition — open incidents —
+  // already reaches this feed via #1 above, since every RigIncident has a
+  // companion Issue.)
 
-  // 4) unusually low duration on recently completed sessions
+  // 3) unusually low duration on recently completed sessions
   for (const s of data.sessions.filter((s) => s.date === date && s.status === "completed" && s.endedAt)) {
     const actualMin = (new Date(s.endedAt!).getTime() - new Date(s.startedAt).getTime()) / 60000;
     const pct = (actualMin / s.plannedDurationMin) * 100;
@@ -135,7 +115,7 @@ export function buildAttentionFeed(data: CityData, date: string): AttentionItem[
     }
   }
 
-  // 5) opportunities — reliable businesses with spare capacity and no visit tomorrow
+  // 4) opportunities — reliable businesses with spare capacity and no visit tomorrow
   const tomorrow = new Date(new Date(date).getTime() + 86400000).toISOString().slice(0, 10);
   const tomorrowBizIds = new Set(assignmentsForDate(data, tomorrow).map((a) => a.businessId));
   for (const biz of data.businesses.filter((b) => b.active && !tomorrowBizIds.has(b.id))) {

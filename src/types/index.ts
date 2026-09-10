@@ -126,6 +126,7 @@ export interface Rig {
 export type DamageCategory =
   // physical
   | "wire_broken"
+  | "ethernet_issue"
   | "cable_frayed"
   | "connector_damaged"
   | "connector_loose"
@@ -137,6 +138,7 @@ export type DamageCategory =
   | "charging_failure"
   | "battery_issue"
   | "overheating"
+  | "imu_issue"
   // camera
   | "camera_not_detected"
   | "camera_dropout"

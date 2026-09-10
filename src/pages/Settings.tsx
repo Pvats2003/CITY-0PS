@@ -226,25 +226,18 @@ export default function Settings() {
                   <Input type="time" value={data.settings.workingHoursEnd} onChange={(e) => updateSettings({ workingHoursEnd: e.target.value })} />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label>Default session duration (min)</Label>
-                  <Input
-                    type="number"
-                    value={data.settings.defaultSessionDurationMin}
-                    onChange={(e) => updateSettings({ defaultSessionDurationMin: Number(e.target.value) })}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Recording hours target / day</Label>
-                  <Input
-                    type="number"
-                    step="0.5"
-                    value={data.settings.recordingHoursTargetPerDay}
-                    onChange={(e) => updateSettings({ recordingHoursTargetPerDay: Number(e.target.value) })}
-                  />
-                </div>
+              <div className="space-y-1.5">
+                <Label>Default session duration (min)</Label>
+                <Input
+                  type="number"
+                  value={data.settings.defaultSessionDurationMin}
+                  onChange={(e) => updateSettings({ defaultSessionDurationMin: Number(e.target.value) })}
+                />
               </div>
+              {/* Recording hours target is no longer a manual setting — it's
+                  derived automatically as (rigs deployed per business) × 10h
+                  and can't drift out of sync with the fleet the way a
+                  hand-set constant could. See engine/insights.ts. */}
               <div className="space-y-1.5">
                 <Label>Theme</Label>
                 <Select value={data.settings.theme} onValueChange={(v) => updateSettings({ theme: v as typeof data.settings.theme })}>

@@ -46,6 +46,23 @@ export function plannedHoursForDate(data: CityData, date: string): number {
     .reduce((sum, a) => sum + (new Date(a.plannedEnd).getTime() - new Date(a.plannedStart).getTime()) / 3_600_000, 0);
 }
 
+/** Same accumulation as recordedHoursForDate, scoped to one business — for
+ * Business 360's "Recording Completed" against its own rig-derived target
+ * (see engine/insights.ts's businessTargetHours). */
+export function recordedHoursForBusinessDate(data: CityData, businessId: string, date: string): number {
+  return sessionsForDate(data, date)
+    .filter((s) => s.businessId === businessId)
+    .reduce((sum, s) => {
+      if (s.status === "completed" && s.endedAt) {
+        return sum + (new Date(s.endedAt).getTime() - new Date(s.startedAt).getTime()) / 3_600_000;
+      }
+      if (s.status === "active") {
+        return sum + (Date.now() - new Date(s.startedAt).getTime()) / 3_600_000;
+      }
+      return sum;
+    }, 0);
+}
+
 export function daysBack(n: number): string[] {
   const out: string[] = [];
   for (let i = n - 1; i >= 0; i--) {

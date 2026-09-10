@@ -1,6 +1,72 @@
-import type { CityData, Business, FieldOfficer, Rig, Session, Issue } from "@/types";
+import type { CityData, Business, FieldOfficer, Rig, Session, Issue, Assignment } from "@/types";
 import { daysBack } from "./selectors";
 import { buildRigSummary } from "./rigGuardian";
+
+/** Each rig deployed at a business is expected to record this many hours a
+ * day — the one constant in the target formula. Everything else scales
+ * with how many rigs are actually there; there is no fixed per-business
+ * target (see businessTargetHours below). */
+export const RECORDING_HOURS_PER_RIG_PER_DAY = 10;
+
+/** Distinct rigs deployed at a business, across the given assignments — the
+ * "number of rigs" half of the target formula. Rigs aren't permanently
+ * owned by a business (see types/index.ts's Rig — no businessId field), so
+ * "deployed at a business" means assigned there via an Assignment record; a
+ * cancelled assignment never deployed a rig there, so it doesn't count. */
+export function businessRigIdsFromAssignments(assignments: Assignment[], businessId: string): Set<string> {
+  return new Set(
+    assignments
+      .filter((a): a is typeof a & { rigId: string } => a.businessId === businessId && a.status !== "cancelled" && !!a.rigId)
+      .map((a) => a.rigId),
+  );
+}
+
+/** DAILY_TARGET_HOURS for one business = (distinct rigs deployed there,
+ * across the given assignments) × 10. Not a fixed constant, and not
+ * duplicated/stored anywhere — a business with zero rigs assigned has a 0h
+ * target; one with 3 has 30h. Takes a raw assignment list (rather than
+ * CityData + date) so it works equally for already-committed assignments
+ * (businessTargetHours/cityTargetHoursForDate below) and for a Manager's
+ * in-progress, not-yet-saved Planner draft. */
+export function businessTargetHoursFromAssignments(assignments: Assignment[], businessId: string): number {
+  return businessRigIdsFromAssignments(assignments, businessId).size * RECORDING_HOURS_PER_RIG_PER_DAY;
+}
+
+/** City-wide target = the sum of every business's own target across the
+ * given assignments, never a flat constant. */
+export function cityTargetHoursFromAssignments(assignments: Assignment[]): number {
+  const businessIds = new Set(assignments.filter((a) => a.status !== "cancelled").map((a) => a.businessId));
+  let total = 0;
+  for (const businessId of businessIds) total += businessTargetHoursFromAssignments(assignments, businessId);
+  return total;
+}
+
+/** businessTargetHoursFromAssignments scoped to one committed date — the
+ * form every non-Planner caller wants (Command Center, Business 360,
+ * SOD/MOD/EOD reports, City Health): replaces the old fixed
+ * settings.recordingHoursTargetPerDay everywhere it was read as a citywide
+ * or per-business "recording hours / target" figure. */
+export function businessTargetHours(data: CityData, businessId: string, date: string): number {
+  return businessTargetHoursFromAssignments(
+    data.assignments.filter((a) => a.date === date),
+    businessId,
+  );
+}
+
+export function cityTargetHoursForDate(data: CityData, date: string): number {
+  return cityTargetHoursFromAssignments(data.assignments.filter((a) => a.date === date));
+}
+
+/** How many distinct rigs a business has deployed on a given date — the
+ * number Business 360 shows next to its target, so a Manager can see the
+ * two numbers agree (rigs × 10 = target) rather than trusting the target
+ * blindly. */
+export function businessRigCount(data: CityData, businessId: string, date: string): number {
+  return businessRigIdsFromAssignments(
+    data.assignments.filter((a) => a.date === date),
+    businessId,
+  ).size;
+}
 
 export interface BusinessStats {
   totalVisits: number;

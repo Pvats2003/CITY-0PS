@@ -22,6 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useCity } from "@/store/city";
 import { proposeDailyPlan, detectConflicts, scorePlan, explainAssignments } from "@/engine/planner";
 import { buildRigSummary, buildFleetReadiness, isDeployable } from "@/engine/rigGuardian";
+import { cityTargetHoursFromAssignments } from "@/engine/insights";
 import { RIG_READINESS_EMOJI } from "@/engine/rigTaxonomy";
 import { AssignmentFormDialog } from "@/components/forms/AssignmentFormDialog";
 import { fmtTime, fmtDate, fmtHours } from "@/lib/dates";
@@ -104,10 +105,14 @@ export function Planner() {
   // proposal — a Manager's edits (FO swap, rig swap, added/removed rows)
   // immediately show their real conflicts, score, and reasoning.
   const liveConflicts = useMemo(() => detectConflicts(visibleDraft, data, date), [visibleDraft, data, date]);
-  const live = useMemo(() => scorePlan(visibleDraft, liveConflicts, data, data.settings.recordingHoursTargetPerDay), [visibleDraft, liveConflicts, data]);
+  // Not a fixed constant — the draft's OWN target (rigs it currently
+  // deploys per business × 10h), so it updates live as rigs are added,
+  // removed, or swapped on the plan, exactly like the plan's other stats.
+  const draftTargetHours = useMemo(() => cityTargetHoursFromAssignments(visibleDraft), [visibleDraft]);
+  const live = useMemo(() => scorePlan(visibleDraft, liveConflicts, data, draftTargetHours), [visibleDraft, liveConflicts, data, draftTargetHours]);
   const liveRecommendations = useMemo(
-    () => explainAssignments(visibleDraft, data, liveConflicts, data.settings.recordingHoursTargetPerDay),
-    [visibleDraft, liveConflicts, data],
+    () => explainAssignments(visibleDraft, data, liveConflicts, draftTargetHours),
+    [visibleDraft, liveConflicts, data, draftTargetHours],
   );
   const recommendationMap = useMemo(() => new Map(liveRecommendations.map((r) => [r.assignmentId, r])), [liveRecommendations]);
 
@@ -129,7 +134,7 @@ export function Planner() {
   // ---- City Capacity ----
   const activeFOs = data.fos.filter((f) => f.active);
   const activeBusinesses = data.businesses.filter((b) => b.active);
-  const targetHours = data.settings.recordingHoursTargetPerDay;
+  const targetHours = draftTargetHours;
   const plannedHours = visibleDraft.reduce((s, a) => s + (new Date(a.plannedEnd).getTime() - new Date(a.plannedStart).getTime()) / 3_600_000, 0);
   const coveragePct = targetHours > 0 ? Math.round((plannedHours / targetHours) * 100) : 0;
 

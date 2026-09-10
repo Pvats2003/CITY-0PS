@@ -36,11 +36,13 @@ import {
   completeInstallationVerification,
 } from "@/engine/workflows";
 import { buildRigSummary, isDeployable, proposeRigReplacement } from "@/engine/rigGuardian";
+import { toDeployability } from "@/engine/rigTaxonomy";
 import { deriveExecutionStage, evidenceCompleteness, PRECHECK_ITEMS, INSTALLATION_ITEMS } from "@/engine/execution";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/status";
+import { RigDeployabilityBadge } from "@/components/rigs/RigDeployabilityBadge";
 import { cn } from "@/lib/utils";
 import { id as genId } from "@/lib/id";
 import { stashPendingFile } from "@/lib/pendingFileBlobs";
@@ -693,6 +695,15 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
                   <Navigation2 className="size-4" /> Open in Google Maps
                 </a>
               </Button>
+            </div>
+          )}
+          {rig && rigSummary && (
+            <div className="mt-3 rounded-lg border border-border bg-surface-2 p-3 flex items-center justify-between gap-2">
+              <div>
+                <div className="text-xs font-semibold text-muted">Your Rig</div>
+                <div className="text-sm font-medium">{rig.code}</div>
+              </div>
+              <RigDeployabilityBadge status={toDeployability(rigSummary.readiness)} />
             </div>
           )}
         </Section>

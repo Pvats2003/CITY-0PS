@@ -23,10 +23,9 @@ export default function Reports() {
   const addReport = useCity((s) => s.addReport);
   const logActivity = useCity((s) => s.logActivity);
 
-  const target = data.settings.recordingHoursTargetPerDay;
-  const sod = useMemo(() => buildSOD(data, date, target), [data, date, target]);
-  const mod = useMemo(() => buildMOD(data, date, target), [data, date, target]);
-  const eod = useMemo(() => buildEOD(data, date, target), [data, date, target]);
+  const sod = useMemo(() => buildSOD(data, date), [data, date]);
+  const mod = useMemo(() => buildMOD(data, date), [data, date]);
+  const eod = useMemo(() => buildEOD(data, date), [data, date]);
   const recs = useMemo(() => buildTomorrowRecommendations(data, date), [data, date]);
 
   function setTab(t: string) {

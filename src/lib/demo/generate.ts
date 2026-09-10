@@ -33,6 +33,8 @@ const CABLE_REPEAT_RIG_IDX = 1; // repeated cable/physical failures -> pattern d
 const CRITICAL_TODAY_RIG_IDX = 3; // fresh critical incident discovered today -> DO NOT DEPLOY
 const INSPECTION_DUE_RIG_IDX = 6; // never inspected, aging -> inspection required
 const REPAIR_HISTORY_RIG_IDX = 8; // resolved incident + repair record on file
+const ETHERNET_ISSUE_RIG_IDX = 5; // open ethernet cable issue -> BLOCKED
+const IMU_ISSUE_RIG_IDX = 7; // open IMU issue, non-blocking -> AT_RISK
 
 function dateNDaysAgo(n: number): string {
   const d = new Date();
@@ -669,6 +671,49 @@ function seedRigIncidentHistory(ents: BuiltEntities, acc: Accumulators, rand: Ra
         businessId: session?.businessId,
         foId: session?.foId,
       });
+    });
+  }
+
+  // (b2) Ethernet cable issue, unresolved -> BLOCKED. Showcases the
+  // physical/network-cable failure mode ops actually reports in the field,
+  // distinct from (a)'s snapped internal wire.
+  const ethernetRig = ents.rigs[ETHERNET_ISSUE_RIG_IDX];
+  {
+    const sessions = sessionsFor(ethernetRig.id);
+    const recent = sessions[sessions.length - 1];
+    const d = new Date();
+    d.setHours(d.getHours() - randInt(2, 10, rand));
+    pushIncident(acc, ethernetRig, {
+      category: "ethernet_issue",
+      severity: "warning",
+      discoveredAt: d.toISOString(),
+      discoveryStage: "preflight",
+      description: `${ethernetRig.code}'s ethernet cable is damaged and won't hold a connection — flagged during preflight.`,
+      lostHours: 0.5,
+      sessionId: recent?.id,
+      businessId: recent?.businessId,
+      foId: recent?.foId,
+    });
+  }
+
+  // (b3) IMU issue, unresolved but non-blocking -> AT_RISK. Rig still
+  // records; the FO should use it with caution until it's checked.
+  const imuRig = ents.rigs[IMU_ISSUE_RIG_IDX];
+  {
+    const sessions = sessionsFor(imuRig.id);
+    const recent = sessions[sessions.length - 1];
+    const d = new Date();
+    d.setHours(d.getHours() - randInt(1, 6, rand));
+    pushIncident(acc, imuRig, {
+      category: "imu_issue",
+      severity: "attention",
+      discoveredAt: d.toISOString(),
+      discoveryStage: "post_session",
+      description: `${imuRig.code}'s IMU is reporting drift — orientation data may be unreliable until checked.`,
+      lostHours: 0,
+      sessionId: recent?.id,
+      businessId: recent?.businessId,
+      foId: recent?.foId,
     });
   }
 

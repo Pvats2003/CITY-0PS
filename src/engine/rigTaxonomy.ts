@@ -9,17 +9,19 @@ export interface DamageCategoryMeta {
 export const DAMAGE_CATEGORIES: DamageCategoryMeta[] = [
   // physical
   { category: "wire_broken", group: "physical", label: "Wire broken" },
+  { category: "ethernet_issue", group: "physical", label: "Ethernet cable issue" },
   { category: "cable_frayed", group: "physical", label: "Cable frayed" },
   { category: "connector_damaged", group: "physical", label: "Connector damaged" },
   { category: "connector_loose", group: "physical", label: "Connector loose" },
   { category: "mount_damaged", group: "physical", label: "Mount damaged" },
   { category: "casing_damaged", group: "physical", label: "Casing damaged" },
-  { category: "camera_physical_damage", group: "physical", label: "Camera physically damaged" },
+  { category: "camera_physical_damage", group: "physical", label: "Camera broken" },
   // electrical
-  { category: "power_failure", group: "electrical", label: "Power failure" },
+  { category: "power_failure", group: "electrical", label: "Power issue" },
   { category: "charging_failure", group: "electrical", label: "Charging failure" },
   { category: "battery_issue", group: "electrical", label: "Battery issue" },
   { category: "overheating", group: "electrical", label: "Overheating" },
+  { category: "imu_issue", group: "electrical", label: "IMU issue" },
   // camera
   { category: "camera_not_detected", group: "camera", label: "Camera not detected" },
   { category: "camera_dropout", group: "camera", label: "Camera dropout" },
@@ -140,5 +142,70 @@ export function readinessToStatus(status: RigReadinessStatus): Status {
       return "critical";
     case "in_repair":
       return "pending";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Deployability — "can this rig be deployed right now?" — the exact 3-tier
+// vocabulary ops uses on the ground (READY / AT_RISK / BLOCKED), derived
+// from real, currently-OPEN rig issues. There is no rig telemetry in this
+// system (no battery/temperature/CPU/GPS/signal feed) — this is the one and
+// only signal that determines deployability, by design (see
+// rigGuardian.ts's deriveRigReadiness, which this taxonomy backs).
+// ---------------------------------------------------------------------------
+
+export type RigDeployability = "READY" | "AT_RISK" | "BLOCKED";
+
+/** A rig with one of these OPEN (category is enough regardless of reported
+ * severity — these damage types are never safely deployable while open) is
+ * BLOCKED. Any other open issue only makes it AT_RISK — unless the FO/
+ * Manager separately marked it "critical" severity, which also forces
+ * BLOCKED (see deriveRigReadiness). Documented here, in one place, per the
+ * operational-model spec: this list IS the "which issue types are
+ * blocking" answer. */
+export const BLOCKING_DAMAGE_CATEGORIES = new Set<DamageCategory>([
+  "wire_broken",
+  "ethernet_issue",
+  "camera_physical_damage",
+  "camera_not_detected",
+  "power_failure",
+  "recording_wont_start",
+  "storage_full",
+  "storage_corruption",
+]);
+
+export function isBlockingCategory(category: DamageCategory): boolean {
+  return BLOCKING_DAMAGE_CATEGORIES.has(category);
+}
+
+export const RIG_DEPLOYABILITY_LABELS: Record<RigDeployability, string> = {
+  READY: "Ready",
+  AT_RISK: "At Risk",
+  BLOCKED: "Blocked",
+};
+
+export const RIG_DEPLOYABILITY_EMOJI: Record<RigDeployability, string> = {
+  READY: "\u{1F7E2}",
+  AT_RISK: "\u{1F7E0}",
+  BLOCKED: "\u{1F534}",
+};
+
+/** The 5-tier RigReadinessStatus stays exactly as it was (it's what
+ * `rig.statusOverride` persists, so its states can't be renamed or
+ * collapsed without breaking existing records) — this is purely a display
+ * mapping onto the simpler 3-tier vocabulary the rest of the operational
+ * model (Rig 360, Fleet/Command Center summaries, Planner) is specified in
+ * terms of. `healthy` -> READY, `watch`/`inspection_required` -> AT_RISK,
+ * `do_not_deploy`/`in_repair` -> BLOCKED. */
+export function toDeployability(status: RigReadinessStatus): RigDeployability {
+  switch (status) {
+    case "healthy":
+      return "READY";
+    case "watch":
+    case "inspection_required":
+      return "AT_RISK";
+    case "do_not_deploy":
+    case "in_repair":
+      return "BLOCKED";
   }
 }

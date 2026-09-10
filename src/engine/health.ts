@@ -1,6 +1,7 @@
 import type { CityData } from "@/types";
 import { assignmentsForDate, issuesForDate, recordedHoursForDate } from "./selectors";
 import { computeRigHealth } from "./rigGuardian";
+import { cityTargetHoursForDate } from "./insights";
 
 export interface ScoreDelta {
   label: string;
@@ -19,7 +20,11 @@ export interface CityHealth {
   categories: CategoryScore[];
 }
 
-export function computeCityHealth(data: CityData, date: string, target: number): CityHealth {
+export function computeCityHealth(data: CityData, date: string): CityHealth {
+  // Not a fixed constant: the city's daily recording target is the sum of
+  // every business's own target (rigs deployed there today × 10h) — see
+  // engine/insights.ts's businessTargetHours/cityTargetHoursForDate.
+  const target = cityTargetHoursForDate(data, date);
   const assignments = assignmentsForDate(data, date);
   const resolved = assignments.filter((a) => ["completed", "rejected", "no_show"].includes(a.status));
   const completed = assignments.filter((a) => a.status === "completed");

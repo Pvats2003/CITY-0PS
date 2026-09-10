@@ -15,8 +15,10 @@ import {
   Users,
 } from "lucide-react";
 import { useCity } from "@/store/city";
-import { computeBusinessStats, businessInsightText } from "@/engine/insights";
+import { computeBusinessStats, businessInsightText, businessTargetHours, businessRigCount } from "@/engine/insights";
+import { recordedHoursForBusinessDate } from "@/engine/selectors";
 import { businessMapsUrl } from "@/lib/googleMaps";
+import { todayISO } from "@/lib/dates";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +38,11 @@ export default function BusinessDetail() {
   const business = data.businesses.find((b) => b.id === id);
 
   const stats = useMemo(() => (business ? computeBusinessStats(data, business) : null), [data, business]);
+  const today = todayISO();
+  const rigsToday = business ? businessRigCount(data, business.id, today) : 0;
+  const targetToday = business ? businessTargetHours(data, business.id, today) : 0;
+  const completedToday = business ? recordedHoursForBusinessDate(data, business.id, today) : 0;
+  const targetProgressPct = targetToday > 0 ? Math.round((completedToday / targetToday) * 100) : 0;
   const events = useMemo(() => data.activity.filter((e) => e.businessId === id).sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()), [data.activity, id]);
   const sessions = useMemo(() => data.sessions.filter((s) => s.businessId === id).sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()), [data.sessions, id]);
   const openIssues = useMemo(() => data.issues.filter((i) => i.businessId === id && i.status !== "resolved" && i.status !== "cancelled"), [data.issues, id]);
@@ -83,6 +90,28 @@ export default function BusinessDetail() {
 
       <div className="px-4 md:px-6 pt-5 grid grid-cols-1 xl:grid-cols-3 gap-5">
         <div className="xl:col-span-2 space-y-5">
+          {/* Today's recording target — not a fixed number: rigs deployed
+              here today × 10h/rig. Zero rigs assigned today means zero
+              target, not a stale default. */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Today's Recording Target</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <Stat label="Rigs" value={rigsToday} />
+                <Stat label="Recording Target" value={`${fmtHours(targetToday, 0)}/day`} />
+                <Stat label="Recording Completed" value={fmtHours(completedToday)} />
+                <Stat
+                  label="Target Progress"
+                  value={`${targetProgressPct}%`}
+                  tone={targetToday === 0 ? undefined : targetProgressPct >= 90 ? "success" : targetProgressPct >= 60 ? undefined : "critical"}
+                />
+              </div>
+              {rigsToday === 0 && <p className="text-xs text-muted mt-3">No rigs assigned here today — target is 0h until one is scheduled.</p>}
+            </CardContent>
+          </Card>
+
           {/* Business Intelligence */}
           <Card>
             <CardHeader>

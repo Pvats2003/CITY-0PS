@@ -1,6 +1,7 @@
 import type { CityData } from "@/types";
 import { daysBack, plannedHoursForDate, recordedHoursForDate } from "./selectors";
 import { computeLostHours } from "./lostHours";
+import { cityTargetHoursForDate } from "./insights";
 import { fmtDate } from "@/lib/dates";
 
 export interface TrendPoint {
@@ -13,7 +14,6 @@ export interface TrendPoint {
 }
 
 export function buildTrend(data: CityData, days: number): TrendPoint[] {
-  const target = data.settings.recordingHoursTargetPerDay;
   return daysBack(days).map((date) => {
     const lost = computeLostHours(data, date);
     return {
@@ -21,7 +21,9 @@ export function buildTrend(data: CityData, days: number): TrendPoint[] {
       label: fmtDate(date, "MMM d"),
       planned: Math.round(plannedHoursForDate(data, date) * 10) / 10,
       actual: Math.round(recordedHoursForDate(data, date) * 10) / 10,
-      target,
+      // Not a fixed constant — that day's own target (rigs deployed per
+      // business that day × 10h, summed across the city). See insights.ts.
+      target: cityTargetHoursForDate(data, date),
       lost: lost.totalLost,
     };
   });

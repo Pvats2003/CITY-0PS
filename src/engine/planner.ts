@@ -2,6 +2,7 @@ import { id } from "@/lib/id";
 import { isoAtTime } from "@/lib/dates";
 import { overlaps } from "./selectors";
 import { buildRigSummary, isDeployable, proposeRigReplacement, type RigSummary } from "./rigGuardian";
+import { cityTargetHoursFromAssignments } from "./insights";
 import type { Assignment, AssignmentRecommendation, CityData, CitySettings, PlanConflict, Severity } from "@/types";
 
 export interface ScoreBreakdownItem {
@@ -362,9 +363,12 @@ export function proposeDailyPlan(data: CityData, date: string, settings: CitySet
   }
 
   const conflicts = detectConflicts(assignments, data, date);
-  const { score, breakdown } = scorePlan(assignments, conflicts, data, settings.recordingHoursTargetPerDay);
+  // Not a fixed constant — this proposed plan's own target (rigs it
+  // deploys per business × 10h).
+  const targetHours = cityTargetHoursFromAssignments(assignments);
+  const { score, breakdown } = scorePlan(assignments, conflicts, data, targetHours);
 
-  const recommendations = explainAssignments(assignments, data, conflicts, settings.recordingHoursTargetPerDay);
+  const recommendations = explainAssignments(assignments, data, conflicts, targetHours);
 
   return { assignments, conflicts, score, breakdown, recommendations };
 }
