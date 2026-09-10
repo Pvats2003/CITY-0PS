@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, ImageOff } from "lucide-react";
+import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, ImageOff, UploadCloud, CloudCheck, CloudAlert } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -9,7 +9,50 @@ import { evidenceCompleteness, runEvidenceQA } from "@/engine/execution";
 import { reviewEvidence, reviewAssignment } from "@/engine/workflows";
 import { ActivityTimeline } from "@/components/shared/ActivityTimeline";
 import { fmtDateTime, fmtHours } from "@/lib/dates";
-import type { Evidence } from "@/types";
+import type { Evidence, EvidenceFile } from "@/types";
+
+/** One evidence photo, preferring the durable Storage downloadUrl over the
+ * transient local blob URL (spec: "every evidence viewer must prefer
+ * downloadUrl over localUrl"). Falls back to localUrl only for the brief
+ * pre-upload window on the SAME device that captured it — and even then,
+ * an onError swap means a stale/foreign blob: reference never renders as a
+ * silent broken-image icon; it renders as an explicit "not yet available"
+ * placeholder instead, since that's exactly the known cross-device gap
+ * this phase closes for uploaded photos and documents for ones still in
+ * flight. */
+function EvidenceThumb({ file }: { file: EvidenceFile }) {
+  const [broken, setBroken] = useState(false);
+  const src = file.downloadUrl ?? file.localUrl;
+  const status = file.uploadStatus;
+
+  return (
+    <div className="relative">
+      {!broken ? (
+        <img key={src} src={src} alt={file.name} onError={() => setBroken(true)} className="size-16 rounded-md object-cover border border-border" />
+      ) : (
+        <div className="size-16 rounded-md border border-border bg-surface-2 flex flex-col items-center justify-center gap-1 text-muted-2">
+          <ImageOff className="size-4" />
+          <span className="text-[9px]">Not available</span>
+        </div>
+      )}
+      {status && status !== "uploaded" && (
+        <div
+          className={`absolute -bottom-1.5 -right-1.5 flex items-center justify-center size-5 rounded-full border border-border ${
+            status === "upload_failed" ? "bg-critical-bg text-critical" : "bg-warning-bg text-warning"
+          }`}
+          title={status === "local_only" ? "Pending upload" : status === "uploading" ? "Uploading…" : "Upload failed — retrying"}
+        >
+          {status === "upload_failed" ? <CloudAlert className="size-3" /> : <UploadCloud className="size-3" />}
+        </div>
+      )}
+      {status === "uploaded" && (
+        <div className="absolute -bottom-1.5 -right-1.5 flex items-center justify-center size-5 rounded-full border border-border bg-success-bg text-success" title="Uploaded">
+          <CloudCheck className="size-3" />
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface Props {
   open: boolean;
@@ -99,7 +142,7 @@ export function EvidenceReviewDialog({ open, onOpenChange, assignmentId }: Props
                 {e.files.length > 0 ? (
                   <div className="flex flex-wrap gap-1.5">
                     {e.files.map((f) => (
-                      <img key={f.id} src={f.localUrl} alt={f.name} className="size-16 rounded-md object-cover border border-border" />
+                      <EvidenceThumb key={f.id} file={f} />
                     ))}
                   </div>
                 ) : (

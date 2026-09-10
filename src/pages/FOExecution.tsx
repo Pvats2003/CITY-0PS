@@ -43,6 +43,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/status";
 import { cn } from "@/lib/utils";
 import { id as genId } from "@/lib/id";
+import { stashPendingFile } from "@/lib/pendingFileBlobs";
 import { IssueFormDialog } from "@/components/forms/IssueFormDialog";
 import { RigIncidentFormDialog } from "@/components/forms/RigIncidentFormDialog";
 import { PostSessionCheckDialog } from "@/components/forms/PostSessionCheckDialog";
@@ -470,23 +471,42 @@ function PhotoCapture({ label, files, onChange }: { label: string; files: Eviden
   const inputRef = useRef<HTMLInputElement>(null);
   function handleFiles(fl: FileList | null) {
     if (!fl || fl.length === 0) return;
-    const items: EvidenceFile[] = Array.from(fl).map((f) => ({
-      id: genId("file"),
-      name: f.name,
-      type: f.type || "image/jpeg",
-      sizeBytes: f.size,
-      localUrl: URL.createObjectURL(f),
-      capturedAt: new Date().toISOString(),
-    }));
+    const items: EvidenceFile[] = Array.from(fl).map((f) => {
+      const id = genId("file");
+      stashPendingFile(id, f);
+      return {
+        id,
+        name: f.name,
+        type: f.type || "image/jpeg",
+        sizeBytes: f.size,
+        localUrl: URL.createObjectURL(f),
+        capturedAt: new Date().toISOString(),
+        uploadStatus: "local_only",
+      };
+    });
     onChange([...files, ...items]);
   }
+  const allUploaded = files.length > 0 && files.every((f) => f.uploadStatus == null || f.uploadStatus === "uploaded");
+  const anyPending = files.some((f) => f.uploadStatus === "local_only" || f.uploadStatus === "uploading");
+  const anyFailed = files.some((f) => f.uploadStatus === "upload_failed");
+
   return (
     <div className="flex items-center gap-2">
       <input ref={inputRef} type="file" accept="image/*" capture="environment" multiple hidden onChange={(e) => handleFiles(e.target.files)} />
       <Button type="button" variant="secondary" size="sm" onClick={() => inputRef.current?.click()}>
         <Camera className="size-3.5" /> {label} {files.length > 0 ? `(${files.length})` : ""}
       </Button>
-      {files.length > 0 && <CheckCircle2 className="size-4 text-success" />}
+      {allUploaded && <CheckCircle2 className="size-4 text-success" />}
+      {!allUploaded && anyFailed && (
+        <span className="text-[11px] text-critical flex items-center gap-1">
+          <ShieldAlert className="size-3.5" /> Upload failed — retrying
+        </span>
+      )}
+      {!allUploaded && !anyFailed && anyPending && (
+        <span className="text-[11px] text-muted flex items-center gap-1">
+          <RefreshCw className="size-3.5 animate-spin" /> Pending upload
+        </span>
+      )}
     </div>
   );
 }

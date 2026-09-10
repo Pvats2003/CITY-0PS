@@ -30,6 +30,8 @@ import { fmtDate, fmtTime, fmtDuration, fmtHours } from "@/lib/dates";
 import { sessionInsightText } from "@/engine/insights";
 import { id as genId } from "@/lib/id";
 import { downloadJSON } from "@/lib/csv";
+import { stashPendingFile, takePendingFile } from "@/lib/pendingFileBlobs";
+import { enqueueMediaUpload, drainMediaOutbox } from "@/data/mediaOutbox";
 
 export default function SessionDetail() {
   const { id } = useParams();
@@ -57,18 +59,25 @@ export default function SessionDetail() {
 
   function onFiles(files: FileList | null) {
     if (!files || files.length === 0 || !session) return;
-    const items = Array.from(files).map((f) => ({
-      id: genId("file"),
-      name: f.name,
-      type: f.type || "application/octet-stream",
-      sizeBytes: f.size,
-      localUrl: URL.createObjectURL(f),
-      capturedAt: new Date().toISOString(),
-    }));
+    const items = Array.from(files).map((f) => {
+      const id = genId("file");
+      stashPendingFile(id, f);
+      return {
+        id,
+        name: f.name,
+        type: f.type || "application/octet-stream",
+        sizeBytes: f.size,
+        localUrl: URL.createObjectURL(f),
+        capturedAt: new Date().toISOString(),
+        uploadStatus: "local_only" as const,
+      };
+    });
+    let evidenceId: string;
     if (evidence) {
       updateEvidence(evidence.id, { files: [...evidence.files, ...items] });
+      evidenceId = evidence.id;
     } else {
-      addEvidence({
+      evidenceId = addEvidence({
         assignmentId: session.assignmentId,
         sessionId: session.id,
         businessId: session.businessId,
@@ -80,7 +89,20 @@ export default function SessionDetail() {
         endedAt: session.endedAt,
         files: items,
         status: "submitted",
-      });
+      }).id;
+    }
+    for (const item of items) {
+      const raw = takePendingFile(item.id);
+      if (!raw) continue;
+      void enqueueMediaUpload({
+        foId: session.foId,
+        assignmentId: session.assignmentId,
+        evidenceId,
+        fileId: item.id,
+        fileName: item.name,
+        mimeType: item.type,
+        blob: raw,
+      }).then(() => drainMediaOutbox());
     }
   }
 
@@ -234,6 +256,11 @@ export default function SessionDetail() {
                     <li key={f.id} className="flex items-center gap-2 text-sm">
                       <Paperclip className="size-3.5 text-muted" />
                       <span className="truncate flex-1">{f.name}</span>
+                      {f.uploadStatus && f.uploadStatus !== "uploaded" && (
+                        <span className={`text-xs ${f.uploadStatus === "upload_failed" ? "text-critical" : "text-muted"}`}>
+                          {f.uploadStatus === "upload_failed" ? "upload failed" : f.uploadStatus === "uploading" ? "uploading…" : "pending upload"}
+                        </span>
+                      )}
                       <span className="text-xs text-muted-2">{Math.round(f.sizeBytes / 1024)} KB</span>
                     </li>
                   ))}

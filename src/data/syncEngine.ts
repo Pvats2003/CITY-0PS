@@ -5,7 +5,9 @@ import type { UserRole } from "@/auth/types";
 import { COLLECTION_NAMES, type CollectionName, type RemoteBackend } from "./backend";
 import { localBackend } from "./localBackend";
 import { enqueue, drainOutbox, clearSyncError, getCollectionSyncError } from "./outbox";
+import { drainMediaOutbox } from "./mediaOutbox";
 import type { CityStore } from "@/store/city";
+import type { Evidence } from "@/types";
 
 /** Mirrors firestore.rules exactly: a Field Officer has an explicit `match`
  * block granting read on only these 9 collections; the rest (collectors,
@@ -23,6 +25,17 @@ function collectionsForRole(role: UserRole | null): CollectionName[] {
   // back to every collection, the historical role-blind behavior, rather
   // than silently under-subscribing a Manager.
   return role === "FIELD_OFFICER" ? FIELD_OFFICER_COLLECTIONS : COLLECTION_NAMES;
+}
+
+/** True once every photo on this evidence record has finished uploading (or
+ * never had one to begin with — undefined uploadStatus covers both
+ * pre-media-durability records and non-photo evidence like a LOCATION or
+ * text-only OTHER submission). Used to decide whether an FO-authored
+ * evidence record is safe to sync to Firestore yet — see the comment on
+ * `syncedEvidenceOnceIds` below for why the FO side can only ever do this
+ * once, in the record's final state. */
+function evidenceReadyToSync(record: Evidence): boolean {
+  return record.files.every((f) => f.uploadStatus == null || f.uploadStatus === "uploaded");
 }
 
 const SYNCED_CHANGE_EVENT = "city-ops-synced-collections-change";
@@ -61,6 +74,16 @@ declare global {
 
 let started = false;
 let applyingRemoteUpdate = false;
+// Evidence ids this FO's client has already enqueued to Firestore, ever
+// (this run of the engine). A Field Officer has no `update` grant on
+// evidence at all (see firestore.rules — append-only by design), so their
+// FIRST write of a given evidence record must already be its final,
+// fully-uploaded state: syncing it a second time, even to add a
+// downloadUrl a photo finished uploading a moment later, would be rejected.
+// Only relevant when `scope` (an FO's own foId) is set; a Manager's writes
+// are unrestricted and never consult this set. Reset on resetSyncEngine()
+// the same as every other per-run tracking state below.
+const syncedEvidenceOnceIds = new Set<string>();
 // Every teardown function this run of the engine created — listener
 // unsubscribes, the local Zustand watcher, the `online` handler — so
 // resetSyncEngine() can cleanly stop ALL of them, not just flip the
@@ -169,9 +192,19 @@ export async function startSyncEngine(): Promise<void> {
         if (prevArr === nextArr) continue;
         const prevById = new Map(prevArr.map((r) => [r.id, r]));
         for (const record of nextArr) {
-          if (prevById.get(record.id) !== record) {
-            queued.push(enqueue({ collection: name, id: record.id, data: record as unknown as Record<string, unknown> }));
+          if (prevById.get(record.id) === record) continue;
+          // FO-authored evidence: hold off until every photo has finished
+          // uploading, and never enqueue the same record twice (see
+          // syncedEvidenceOnceIds above). Every other collection, and every
+          // Manager write (scope undefined), syncs on every change exactly
+          // as before — this only narrows the one case that would
+          // otherwise produce an `update` Firestore rejects.
+          if (name === "evidence" && scope) {
+            if (syncedEvidenceOnceIds.has(record.id)) continue;
+            if (!evidenceReadyToSync(record as unknown as Evidence)) continue;
+            syncedEvidenceOnceIds.add(record.id);
           }
+          queued.push(enqueue({ collection: name, id: record.id, data: record as unknown as Record<string, unknown> }));
         }
         const nextIds = new Set(nextArr.map((r) => r.id));
         for (const record of prevArr) {
@@ -193,10 +226,17 @@ export async function startSyncEngine(): Promise<void> {
     useCity.persist.onFinishHydration(attachLocalWatcher);
   }
 
-  const goOnline = () => drainOutbox(backend);
+  const goOnline = () => {
+    void drainOutbox(backend);
+    void drainMediaOutbox();
+  };
   window.addEventListener("online", goOnline);
   teardowns.push(() => window.removeEventListener("online", goOnline));
   void drainOutbox(backend);
+  // Photos queued from a previous session (offline capture, then the tab
+  // closed before they finished uploading) resume here — the media outbox
+  // lives in IndexedDB, independent of this run of the sync engine.
+  void drainMediaOutbox();
 }
 
 /** Tears down every listener/watcher this run of the engine attached and
@@ -217,6 +257,7 @@ export function resetSyncEngine(): void {
   started = false;
   applyingRemoteUpdate = false;
   syncedCollections.clear();
+  syncedEvidenceOnceIds.clear();
   // Every collection's error, not just one — this is a full identity
   // change, not "this one collection recovered," so the aggregate
   // Manager-wide status pill and any per-collection reader alike must both

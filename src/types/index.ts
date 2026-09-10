@@ -310,13 +310,38 @@ export interface Session {
 
 // ---------------------------------- Evidence -----------------------------------
 
+/** Where an EvidenceFile's binary currently stands. "local_only"/"uploading"
+ * are transient — retried automatically by data/mediaOutbox.ts on every
+ * reconnect, never a terminal failure state the app gives up on.
+ * "upload_failed" is shown to the user but is ALSO still retried (same
+ * indefinite-retry philosophy as data/outbox.ts) rather than abandoned.
+ * Undefined (on records that predate this field) is treated as ready/no
+ * media pending, matching the legacy shape's meaning. */
+export type MediaUploadStatus = "local_only" | "uploading" | "uploaded" | "upload_failed";
+
 export interface EvidenceFile {
   id: string;
   name: string;
   type: string; // mime
   sizeBytes: number;
-  localUrl: string; // object URL (session only, not persisted binary)
+  /** Transient object URL (URL.createObjectURL), valid only in the browser
+   * tab/session that captured it — never resolves for another device or
+   * after that tab's Document unloads. Kept only as an immediate local
+   * preview before/while the real upload is in flight; once uploadStatus
+   * is "uploaded", `downloadUrl` is the permanent reference and every
+   * viewer must prefer it over this field. */
+  localUrl: string;
   capturedAt: string;
+  /** Undefined only on records created before this field existed. */
+  uploadStatus?: MediaUploadStatus;
+  /** Deterministic Firebase Storage object path this file uploads to —
+   * see data/mediaStorage.ts's evidenceStoragePath(). Stable per file id,
+   * so a retried upload overwrites the same object rather than creating a
+   * duplicate. */
+  storagePath?: string;
+  /** Persistent HTTPS download URL, set once uploadStatus is "uploaded" —
+   * the one reference that resolves from any device/session. */
+  downloadUrl?: string;
 }
 
 /** What step of execution this evidence record proves. ARRIVAL/LOCATION/

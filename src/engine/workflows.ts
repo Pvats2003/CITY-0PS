@@ -4,6 +4,8 @@ import { autoQualityReview } from "./quality";
 import { categoryGroup, categoryLabel, ISSUE_TYPE_BY_GROUP } from "./rigTaxonomy";
 import { estimateIncidentLostHours } from "./rigGuardian";
 import { checkLocation, PRECHECK_ITEMS, type ChecklistItem } from "./execution";
+import { takePendingFile } from "@/lib/pendingFileBlobs";
+import { enqueueMediaUpload, drainMediaOutbox } from "@/data/mediaOutbox";
 import type {
   Assignment,
   AssignmentReviewStatus,
@@ -214,6 +216,28 @@ function captureEvidence(params: {
     rigId: params.assignment.rigId,
     summary: `${EVIDENCE_TYPE_LABEL[params.type]} evidence captured`,
   });
+
+  // Queue each photo's real binary for Storage upload — the raw File was
+  // stashed by whichever capture UI built `params.files` (PhotoCapture in
+  // FOExecution.tsx), since by this point only its metadata + a transient
+  // localUrl remain. Firestore sync of this evidence record is deferred
+  // (see syncEngine.ts) until every file here finishes uploading — an FO
+  // can never legally update evidence after creating it (append-only), so
+  // the record must reach Firestore already in its final state.
+  for (const file of evidence.files) {
+    const raw = takePendingFile(file.id);
+    if (!raw) continue;
+    void enqueueMediaUpload({
+      foId: params.assignment.foId,
+      assignmentId: params.assignment.id,
+      evidenceId: evidence.id,
+      fileId: file.id,
+      fileName: file.name,
+      mimeType: file.type,
+      blob: raw,
+    }).then(() => drainMediaOutbox());
+  }
+
   return evidence;
 }
 

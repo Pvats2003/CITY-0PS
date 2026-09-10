@@ -1,0 +1,45 @@
+rules_version = '2';
+
+// City Ops OS — Firebase Storage security rules for evidence photo binaries.
+//
+// Mirrors firestore.rules' role/ownership model exactly (same users/{uid}
+// doc, same MANAGER/FIELD_OFFICER roles, same myFoId() ownership check) via
+// Storage Rules' cross-service firestore.get() — no second identity system,
+// no custom auth claims, no new backend. Not applied automatically: deploy
+// with `firebase deploy --only storage` (see DEPLOYMENT.md). Written and
+// reviewed here; the live project's actual deployment could not be
+// verified from this environment (see this round's final report).
+service firebase.storage {
+  match /b/{bucket}/o {
+    function myUser() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+    function isManager() {
+      return request.auth != null && myUser().role == "MANAGER";
+    }
+    function isFieldOfficer() {
+      return request.auth != null && myUser().role == "FIELD_OFFICER";
+    }
+    function myFoId() {
+      return myUser().foId;
+    }
+
+    // Path shape is data/mediaStorage.ts's evidenceStoragePath():
+    // evidence/{foId}/{assignmentId}/{evidenceId}/{fileId}-{fileName}
+    // The foId segment is exactly what's checked below — never the
+    // uploading client's own claim, always the path itself, which the app
+    // only ever constructs from an assignment's own foId (never arbitrary
+    // user input).
+    match /evidence/{foId}/{assignmentId}/{evidenceId}/{fileName} {
+      allow read: if isManager() || (isFieldOfficer() && foId == myFoId());
+      // Manager: full access, same as every Firestore collection's wildcard
+      // grant. FO: create their own evidence's photos, and update (never
+      // delete) their own — update is for a resumable upload finishing in
+      // a second session/request against the SAME deterministic path
+      // (spec section 5's own carve-out), not for editing after the fact.
+      // No FO delete grant, matching the append-only Firestore model.
+      allow write: if isManager();
+      allow create, update: if isFieldOfficer() && foId == myFoId();
+    }
+  }
+}
