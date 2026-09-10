@@ -9,7 +9,7 @@ declare global {
      * without a live project. Assigned unconditionally below (a plain
      * function reference, nothing sensitive); inert for real users since
      * nothing in the shipped app ever calls it. */
-    __CITY_OPS_TEST_FORCE_SYNC_ERROR__?: (collection: CollectionName, message: string) => void;
+    __CITY_OPS_TEST_FORCE_SYNC_ERROR__?: (collection: CollectionName, message: string, code?: string) => void;
   }
 }
 
@@ -49,6 +49,11 @@ export async function outboxDepth(): Promise<number> {
   return allKeys.filter((k) => typeof k === "string" && k.startsWith("outbox:")).length;
 }
 
+interface SyncErrorDetail {
+  code: string;
+  message: string;
+}
+
 // Per-collection, not a single global flag: a denied listener on one
 // collection (e.g. a Manager-only collection an FO was never granted, or
 // any other collection-specific hiccup) must never be indistinguishable
@@ -57,7 +62,7 @@ export async function outboxDepth(): Promise<number> {
 // getCollectionSyncError(); the aggregate getSyncError() below (still used
 // by the Manager-wide system status widgets) reports whether ANYTHING,
 // anywhere, has an error, for that different, deliberately broader purpose.
-const collectionSyncErrors = new Map<CollectionName, string>();
+const collectionSyncErrors = new Map<CollectionName, SyncErrorDetail>();
 
 /** Real error only — never fabricated. Cleared the moment a write or
  * listener on THIS collection actually succeeds. Distinct from "offline":
@@ -65,7 +70,22 @@ const collectionSyncErrors = new Map<CollectionName, string>();
  * denial, backend unavailable, etc.) — the one case where the UI must say
  * SYNC ERROR rather than pretend success or silently retry forever. */
 export function getCollectionSyncError(collection: CollectionName): string | null {
-  return collectionSyncErrors.get(collection) ?? null;
+  return collectionSyncErrors.get(collection)?.message ?? null;
+}
+
+/** The raw Firestore error code (e.g. "permission-denied") behind THIS
+ * collection's current error, or null if it has none. Kept separate from
+ * the human-readable message above so a diagnostic surface can show both —
+ * see FoDiagnosticPanel.tsx's SYNC FAILURES section. */
+export function getCollectionSyncErrorCode(collection: CollectionName): string | null {
+  return collectionSyncErrors.get(collection)?.code ?? null;
+}
+
+/** Every collection that currently has an error, in one call — diagnostic
+ * surfaces need to show ALL failing collections at once (never just "an
+ * example"), unlike getSyncError() below. */
+export function getAllCollectionSyncErrors(): Array<{ collection: CollectionName } & SyncErrorDetail> {
+  return [...collectionSyncErrors.entries()].map(([collection, detail]) => ({ collection, ...detail }));
 }
 
 /** Aggregate view across every collection — "is anything wrong right now,
@@ -75,7 +95,7 @@ export function getCollectionSyncError(collection: CollectionName): string | nul
  * page gating its OWN render on one specific collection's data. */
 export function getSyncError(): string | null {
   const first = collectionSyncErrors.values().next();
-  return first.done ? null : first.value;
+  return first.done ? null : first.value.message;
 }
 
 /** Shared by both write failures (drainOutbox, below) and realtime listener
@@ -85,9 +105,12 @@ export function getSyncError(): string | null {
  * left a collection permanently empty with no visible sign anything was
  * wrong), and never bleed into a DIFFERENT collection's status (the later
  * failure mode: an unrelated collection's expected-by-role denial made an
- * otherwise-working page show "permission denied" forever). */
-export function reportSyncError(collection: CollectionName, message: string): void {
-  collectionSyncErrors.set(collection, message);
+ * otherwise-working page show "permission denied" forever). `code`
+ * defaults to "unknown" only for callers that genuinely have no raw
+ * Firestore error code to hand over (there are none left in this codebase,
+ * but the test seam and any future caller stay callable without it). */
+export function reportSyncError(collection: CollectionName, message: string, code = "unknown"): void {
+  collectionSyncErrors.set(collection, { code, message });
   notifyChange();
 }
 
@@ -133,7 +156,8 @@ export async function drainOutbox(backend: RemoteBackend): Promise<void> {
       clearSyncError(entry.collection);
     } catch (err) {
       if (!navigator.onLine) break; // lost connectivity mid-drain — not an error
-      reportSyncError(entry.collection, describeError(err));
+      const code = (err as { code?: string } | undefined)?.code ?? "unknown";
+      reportSyncError(entry.collection, describeError(err), code);
       break;
     }
   }

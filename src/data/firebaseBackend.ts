@@ -118,7 +118,7 @@ export const firebaseBackend: RemoteBackend = {
           "errorCode=" + code,
           "errorMessage=" + JSON.stringify(err.message),
         );
-        reportSyncError(name, describeError(err));
+        reportSyncError(name, describeError(err), code);
       },
     );
   },

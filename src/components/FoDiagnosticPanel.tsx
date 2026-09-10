@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Copy, Check } from "lucide-react";
+import { Copy, Check, ShieldAlert } from "lucide-react";
 import { useAuth } from "@/auth/AuthContext";
 import { useProfileDiag } from "@/auth/useProfileDiag";
 import { useFosDiag } from "@/data/useFosDiag";
+import { useAllFoSyncStatus } from "@/data/useAllFoSyncStatus";
 import { BUILD_SHA, BUILD_TIME } from "@/lib/buildInfo";
 import { Button } from "@/components/ui/button";
 import type { CollectionSyncState } from "@/data/useCollectionSyncStatus";
@@ -79,6 +80,8 @@ export function FoDiagnosticPanel({ requestedFoId, matchedFoId, matchedFoName, f
   const { user, isDemoMode } = useAuth();
   const profileDiag = useProfileDiag();
   const fosDiag = useFosDiag();
+  const allSync = useAllFoSyncStatus();
+  const failingCollections = allSync.filter((c) => c.status === "error");
   const projectId = useFirebaseProjectId();
   const [copied, setCopied] = useState(false);
 
@@ -163,6 +166,11 @@ export function FoDiagnosticPanel({ requestedFoId, matchedFoId, matchedFoName, f
         `CANDIDATE_${i + 1}_TRIM_MATCH=${trimMatch ? "YES" : "NO"}`
       );
     }),
+    ...allSync.map(
+      (c) =>
+        `SYNC_${c.collection}=status:${c.status}` +
+        (c.status === "error" ? ` errorCode:${c.errorCode} errorMessage:${displayValue(c.errorMessage)}` : ""),
+    ),
   ];
 
   async function handleCopy() {
@@ -255,6 +263,37 @@ export function FoDiagnosticPanel({ requestedFoId, matchedFoId, matchedFoName, f
       <div className="h-px bg-border my-1.5" />
       <Row label="Current screen" value={screen} />
       <Row label="Sync error" value={syncErrorText} />
+
+      {allSync.length > 0 && (
+        <>
+          <div className="h-px bg-border my-1.5" />
+          <div className="text-[10px] uppercase tracking-wide text-muted-2 mb-1">
+            Collection sync status ({failingCollections.length} failing / {allSync.length} total)
+          </div>
+
+          {failingCollections.map((c) => (
+            <div key={c.collection} className="mb-1.5 rounded-md border border-critical/30 bg-critical-bg px-2 py-1.5">
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-critical mb-1">
+                <ShieldAlert className="size-3.5" /> SYNC FAILURE
+              </div>
+              <Row label="collection" value={c.collection} />
+              <Row label="status" value={c.status} />
+              <Row label="errorCode" value={c.errorCode ?? "unknown"} />
+              <Row label="errorMessage" value={c.errorMessage ?? "(none)"} />
+            </div>
+          ))}
+
+          {/* Every collection, failing or not — never hidden, so a working
+           * collection is just as visible as a broken one. */}
+          {allSync.map((c) => (
+            <Row
+              key={c.collection}
+              label={c.collection}
+              value={c.status === "error" ? `error (see SYNC FAILURE above)` : c.status}
+            />
+          ))}
+        </>
+      )}
 
       <Button variant="secondary" size="sm" onClick={() => void handleCopy()} className="w-full mt-2.5">
         {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
