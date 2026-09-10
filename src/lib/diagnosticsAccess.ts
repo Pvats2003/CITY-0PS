@@ -1,38 +1,21 @@
 /** Gates visibility of FoDiagnosticPanel (build info, sync/profile
- * internals — see src/components/FoDiagnosticPanel.tsx) — developer/support
- * tooling built for production debugging, never part of the normal Field
- * Officer product experience. An FO must never see it by default.
+ * internals — see src/components/FoDiagnosticPanel.tsx) — developer
+ * tooling, never part of the normal Field Officer product experience.
  *
- * Two ways in, both explicit opt-in:
- *  - Local development (`npm run dev`): always on, via Vite's own DEV flag
- *    — no setup needed while building/debugging locally.
- *  - Any deployment, including production: append `?diag=1` to the URL
- *    once; the choice is remembered in localStorage for that device/browser
- *    until turned off again with `?diag=0`. This is what makes it possible
- *    to debug a real FO's real production sync/profile issue without
- *    shipping a second build — the exact scenario this panel exists for —
- *    while keeping it invisible to every FO who never opts in. */
-const STORAGE_KEY = "city-ops-diagnostics-enabled";
-
+ * Contract — exactly one input governs this, Vite's own build-time DEV
+ * flag, so the answer is fixed at build time and cannot be changed at
+ * runtime by anything a client can control:
+ *  - Local development (`npm run dev`): always enabled.
+ *  - Every built bundle — including a production deploy opened by a real
+ *    Field Officer — always disabled, unconditionally.
+ *
+ * There is deliberately no URL query param, localStorage flag, or other
+ * client-side toggle: a runtime opt-in is, by construction, something any
+ * signed-in FO can also opt into. If production troubleshooting ever needs
+ * this panel again, it must be reintroduced as an authenticated Manager/
+ * admin-only surface (checked against the already-authenticated
+ * AppUser.role, the same way every other Manager-only surface in this app
+ * is gated) — never a publicly reachable flag. */
 export function isDiagnosticsEnabled(): boolean {
-  if (import.meta.env.DEV) return true;
-  if (typeof window === "undefined") return false;
-
-  const params = new URLSearchParams(window.location.search);
-  if (params.has("diag")) {
-    const on = params.get("diag") === "1";
-    try {
-      window.localStorage.setItem(STORAGE_KEY, on ? "1" : "0");
-    } catch {
-      // Storage unavailable (private mode, quota) — the URL param itself
-      // still governs this page load; it just won't persist across visits.
-    }
-    return on;
-  }
-
-  try {
-    return window.localStorage.getItem(STORAGE_KEY) === "1";
-  } catch {
-    return false;
-  }
+  return import.meta.env.DEV;
 }
