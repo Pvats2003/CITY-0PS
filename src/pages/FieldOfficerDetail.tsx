@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
 import { useParams, Link, Navigate } from "react-router-dom";
 import { ArrowLeft, Pencil, Smartphone, Lightbulb, CheckCircle2, Circle, PlayCircle, PlusCircle, XCircle, ClipboardCheck } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 import { useCity } from "@/store/city";
+import { useCollectionSyncStatus } from "@/data/useCollectionSyncStatus";
 import { computeFOStats, foInsightText } from "@/engine/insights";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -24,6 +26,7 @@ export default function FieldOfficerDetail() {
   const fo = data.fos.find((f) => f.id === id);
   const date = todayISO();
 
+  const assignmentsSync = useCollectionSyncStatus("assignments");
   const stats = useMemo(() => (fo ? computeFOStats(data, fo) : null), [data, fo]);
   const events = useMemo(() => data.activity.filter((e) => e.foId === id).sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()), [data.activity, id]);
   const bizMap = new Map(data.businesses.map((b) => [b.id, b]));
@@ -117,6 +120,12 @@ export default function FieldOfficerDetail() {
               </Button>
             </CardHeader>
             <CardContent className="pt-0 space-y-2">
+              {assignmentsSync.error && (
+                <div className="flex items-start gap-2 rounded-md border border-critical/20 bg-critical-bg px-3 py-2 text-xs text-critical">
+                  <AlertTriangle className="size-3.5 shrink-0 mt-0.5" />
+                  <span>Assignments aren't syncing to the server ({assignmentsSync.error}) — anything shown below may not exist on {fo.name}'s device yet.</span>
+                </div>
+              )}
               {today.length === 0 && <div className="text-sm text-muted py-4 text-center">Nothing scheduled today.</div>}
               {today.map((a) => {
                 const status = assignmentStatusToStatus(a.status);

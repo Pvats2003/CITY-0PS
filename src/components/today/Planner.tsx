@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useCity } from "@/store/city";
+import { useCollectionSyncStatus } from "@/data/useCollectionSyncStatus";
 import { proposeDailyPlan, detectConflicts, scorePlan, explainAssignments } from "@/engine/planner";
 import { buildRigSummary, buildFleetReadiness, isDeployable } from "@/engine/rigGuardian";
 import { cityTargetHoursFromAssignments } from "@/engine/insights";
@@ -61,6 +62,14 @@ export function Planner() {
   const [approveDialogOpen, setApproveDialogOpen] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
   const [approvedNotice, setApprovedNotice] = useState(false);
+  // Real, live sync state for the "assignments" collection — approving a
+  // plan writes here (store/city.ts's approvePlan). A Manager must never
+  // see "Plan approved" and a list of assignments while Firestore
+  // actually rejected the write; this is the one place that can't be
+  // hidden behind the local Zustand state that made it LOOK like it
+  // worked. See outbox.ts's drainOutbox for how a failed write here gets
+  // reported.
+  const assignmentsSync = useCollectionSyncStatus("assignments");
 
   // Resume an existing draft for this date (survives navigating away and
   // back — DRAFT is real persisted state, not component-local scratch).
@@ -223,6 +232,15 @@ export function Planner() {
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-0 space-y-5">
+          {assignmentsSync.error && (
+            <div className="flex items-start gap-2 rounded-md border border-critical/20 bg-critical-bg px-3 py-2.5 text-xs text-critical">
+              <AlertTriangle className="size-3.5 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-medium">Assignments are not syncing to the server.</div>
+                <div className="mt-0.5">{assignmentsSync.error} Approved or manually-added assignments below may only exist on this device — Field Officers won't see them until this is resolved.</div>
+              </div>
+            </div>
+          )}
           <div className="flex flex-wrap items-end gap-3">
             <div className="space-y-1">
               <label className="text-xs text-muted">Plan for date</label>

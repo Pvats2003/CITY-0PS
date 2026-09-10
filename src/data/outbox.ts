@@ -1,4 +1,5 @@
 import { get, set, del, keys } from "idb-keyval";
+import { omitUndefined } from "@/lib/omitUndefined";
 import type { CollectionName, RemoteBackend } from "./backend";
 
 declare global {
@@ -39,8 +40,21 @@ export function onOutboxChange(cb: () => void): () => void {
   return () => window.removeEventListener(OUTBOX_CHANGE_EVENT, cb);
 }
 
+/** Every collection's every write funnels through here on its way to
+ * IndexedDB and then Firestore — the single chokepoint, regardless of
+ * which store action or future code path produced the record. Stripping
+ * explicit `undefined` values HERE, not just at each form dialog's own
+ * payload construction, means a missed call site (e.g. the AI Planner's
+ * proposeDailyPlan(), which built `rigId: rig?.id` — an explicit
+ * `undefined` property Firestore's setDoc() rejects client-side — and
+ * shipped for a full round of "fix the dialogs" before this was found)
+ * can never again reach Firestore un-sanitized. Per-call-site
+ * omitUndefined() calls stay in place as the immediate, readable fix at
+ * the point of construction; this is the backstop that makes the bug
+ * class structurally impossible to reintroduce anywhere in the app. */
 export async function enqueue(entry: { collection: CollectionName; id: string; data: Record<string, unknown> | null }): Promise<void> {
-  await set(keyFor(entry.collection, entry.id), { ...entry, queuedAt: new Date().toISOString() } satisfies OutboxEntry);
+  const data = entry.data === null ? null : omitUndefined(entry.data);
+  await set(keyFor(entry.collection, entry.id), { ...entry, data, queuedAt: new Date().toISOString() } satisfies OutboxEntry);
   notifyChange();
 }
 
@@ -155,11 +169,31 @@ let draining = false;
 let drainQueued = false;
 
 /** Pushes every queued entry to the backend, in the order they were first
- * queued. Stops at the first failure rather than reordering or skipping —
- * the next `online` event or manual retry picks up where it left off.
- * Never drops a write. A failure while still online is a real SYNC ERROR;
- * a failure caused by losing connectivity mid-drain is not — that's just
- * "offline," and is cleared silently on the next successful drain. */
+ * queued. Stops at the first RETRIABLE failure rather than reordering or
+ * skipping — the next `online` event or manual retry picks up where it
+ * left off. Never drops a write. A failure while still online is a real
+ * SYNC ERROR; a failure caused by losing connectivity mid-drain is not —
+ * that's just "offline," and is cleared silently on the next successful
+ * drain.
+ *
+ * "invalid-argument" is the one exception to "stop at the first failure":
+ * it's the Firestore SDK's own client-side data-validation rejection
+ * (e.g. a document with an explicit `undefined` field — see
+ * omitUndefined.ts), thrown before any network call ever happens. Unlike
+ * a connectivity or permission problem, retrying it changes nothing, and
+ * because `keys()` is iterated in a fixed lexicographic order every entry
+ * queued for a collection whose name sorts after the broken one (which,
+ * for "assignments", is almost everything) would otherwise be
+ * PERMANENTLY blocked behind it forever — every subsequent drain
+ * restarts from the same first key and hits the same entry again. Proven
+ * in production: a single malformed assignment left Firestore with
+ * businesses/fos/rigs/users/activity but zero assignments, and unrelated
+ * later writes (e.g. a newly added Business) silently never synced
+ * either, because they were queued alphabetically behind the stuck
+ * assignment entry. The broken entry itself is never deleted — it keeps
+ * reporting a real SYNC ERROR for its own collection until the
+ * application code that produced it is fixed — but it no longer holds
+ * every other collection's valid writes hostage. */
 export async function drainOutbox(backend: RemoteBackend): Promise<void> {
   if (draining) {
     drainQueued = true;
@@ -181,6 +215,7 @@ export async function drainOutbox(backend: RemoteBackend): Promise<void> {
         if (!navigator.onLine) break; // lost connectivity mid-drain — not an error
         const code = (err as { code?: string } | undefined)?.code ?? "unknown";
         reportSyncError(entry.collection, describeError(err), code);
+        if (code === "invalid-argument") continue; // permanently broken data — don't block the rest of the queue
         break;
       }
     }

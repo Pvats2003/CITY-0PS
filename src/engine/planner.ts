@@ -347,8 +347,16 @@ export function proposeDailyPlan(data: CityData, date: string, settings: CitySet
       date,
       businessId: biz.id,
       foId: fo.id,
-      collectorId: collector?.id,
-      rigId: rig?.id,
+      // Omit collectorId/rigId entirely when there's no match — `field:
+      // x?.id` where x is undefined produces an explicit `undefined`
+      // property, which Firestore's setDoc() rejects client-side (same
+      // bug class as AssignmentFormDialog.tsx; see omitUndefined.ts).
+      // These AI-proposed assignments flow into DailyPlan.draftAssignments
+      // and then, on approval, straight into the live assignments array
+      // (store/city.ts's approvePlan) — a path that bypasses the dialog's
+      // own fix entirely, which is why this went unnoticed until now.
+      ...(collector ? { collectorId: collector.id } : {}),
+      ...(rig ? { rigId: rig.id } : {}),
       plannedStart,
       plannedEnd,
       priority: chosen.indexOf(biz) === 0 ? "high" : "normal",
