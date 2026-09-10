@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useCity } from "@/store/city";
 import { computeBusinessStats, businessInsightText } from "@/engine/insights";
+import { businessMapsUrl } from "@/lib/googleMaps";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,6 +49,7 @@ export default function BusinessDetail() {
 
   if (!business) return <Navigate to="/businesses" replace />;
   const insight = businessInsightText(stats!);
+  const mapsUrl = businessMapsUrl(business);
 
   return (
     <div className="pb-10">
@@ -132,14 +134,14 @@ export default function BusinessDetail() {
                   <span className="flex-1">{business.address}</span>
                 </div>
               )}
-              {business.lat && business.lng && (
+              {mapsUrl && (
                 <a
-                  href={`https://www.google.com/maps/search/?api=1&query=${business.lat},${business.lng}`}
+                  href={mapsUrl}
                   target="_blank"
                   rel="noreferrer"
                   className="flex items-center gap-1.5 text-primary text-xs hover:underline pl-6"
                 >
-                  Open in Maps <ExternalLink className="size-3" />
+                  📍 Google Maps — Open Location <ExternalLink className="size-3" />
                 </a>
               )}
               {business.contactName && (

@@ -44,6 +44,7 @@ import { StatusBadge } from "@/components/status";
 import { cn } from "@/lib/utils";
 import { id as genId } from "@/lib/id";
 import { stashPendingFile } from "@/lib/pendingFileBlobs";
+import { businessMapsUrl } from "@/lib/googleMaps";
 import { IssueFormDialog } from "@/components/forms/IssueFormDialog";
 import { RigIncidentFormDialog } from "@/components/forms/RigIncidentFormDialog";
 import { PostSessionCheckDialog } from "@/components/forms/PostSessionCheckDialog";
@@ -438,6 +439,7 @@ function TodayList({ assignments, onSelect }: { assignments: Assignment[]; onSel
         const rig = a.rigId ? rigMap.get(a.rigId) : undefined;
         const done = a.status === "completed";
         const active = a.status === "in_progress";
+        const mapsUrl = biz ? businessMapsUrl(biz) : undefined;
         return (
           <div key={a.id} className="flex items-stretch gap-2">
             <button
@@ -454,14 +456,14 @@ function TodayList({ assignments, onSelect }: { assignments: Assignment[]; onSel
                 {rig && <span className="text-muted-2">· {rig.code}</span>}
               </div>
             </button>
-            {biz?.lat && biz?.lng && (
+            {mapsUrl && (
               <a
-                href={`https://www.google.com/maps/search/?api=1&query=${biz.lat},${biz.lng}`}
+                href={mapsUrl}
                 target="_blank"
                 rel="noreferrer"
                 onClick={(e) => e.stopPropagation()}
                 className="flex items-center justify-center rounded-lg border border-border bg-surface px-3 text-primary shrink-0"
-                title="Navigate"
+                title="Open in Google Maps"
               >
                 <Navigation2 className="size-4" />
               </a>
@@ -683,15 +685,15 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
           <div className="text-sm text-muted">
             {fmtTime(assignment.plannedStart)} · {business?.area}
           </div>
-          {business?.lat && business?.lng && (
-            <a
-              href={`https://www.google.com/maps/search/?api=1&query=${business.lat},${business.lng}`}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 text-sm text-primary mt-2"
-            >
-              <Navigation2 className="size-4" /> Navigate
-            </a>
+          {business && businessMapsUrl(business) && (
+            <div className="mt-3 rounded-lg border border-border bg-surface-2 p-3 space-y-2">
+              <div className="text-xs font-semibold text-muted flex items-center gap-1.5">📍 Business Location</div>
+              <Button asChild size="sm" variant="secondary" className="w-full">
+                <a href={businessMapsUrl(business)} target="_blank" rel="noreferrer">
+                  <Navigation2 className="size-4" /> Open in Google Maps
+                </a>
+              </Button>
+            </div>
           )}
         </Section>
         {!assignment.enRouteAt && (

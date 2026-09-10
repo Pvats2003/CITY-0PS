@@ -41,6 +41,12 @@ export interface Business {
   address: string;
   lat?: number;
   lng?: number;
+  /** The user's own pasted Google Maps link for this business (any normal
+   * google.com/maps, maps.google.com, or maps.app.goo.gl share URL) — the
+   * production-usable location field, since nothing in the app ever lets a
+   * Manager set lat/lng directly (those are demo-data-only coordinates).
+   * See lib/googleMaps.ts for validation and the display-link fallback. */
+  googleMapsUrl?: string;
   contactName?: string;
   contactPhone?: string;
   preferredWindowStart?: string; // "HH:mm"

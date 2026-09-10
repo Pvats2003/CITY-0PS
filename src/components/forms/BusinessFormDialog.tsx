@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useCity } from "@/store/city";
+import { isGoogleMapsUrl } from "@/lib/googleMaps";
 import type { Business } from "@/types";
 
 interface Props {
@@ -20,6 +21,7 @@ const emptyForm = {
   category: "",
   area: "",
   address: "",
+  googleMapsUrl: "",
   contactName: "",
   contactPhone: "",
   preferredWindowStart: "",
@@ -45,6 +47,7 @@ export function BusinessFormDialog({ open, onOpenChange, business, onSaved }: Pr
               category: business.category,
               area: business.area,
               address: business.address,
+              googleMapsUrl: business.googleMapsUrl ?? "",
               contactName: business.contactName ?? "",
               contactPhone: business.contactPhone ?? "",
               preferredWindowStart: business.preferredWindowStart ?? "",
@@ -66,12 +69,17 @@ export function BusinessFormDialog({ open, onOpenChange, business, onSaved }: Pr
     if (!form.name.trim()) return setError("Business name is required.");
     if (!form.area.trim()) return setError("Area is required.");
     if (form.capacityHoursPerDay <= 0) return setError("Capacity hours must be greater than 0.");
+    const trimmedMapsUrl = form.googleMapsUrl.trim();
+    if (trimmedMapsUrl && !isGoogleMapsUrl(trimmedMapsUrl)) {
+      return setError("That doesn't look like a Google Maps link. Paste a link from Google Maps (google.com/maps, maps.google.com, or a maps.app.goo.gl share link).");
+    }
 
     const payload = {
       name: form.name.trim(),
       category: form.category.trim() || "General",
       area: form.area.trim(),
       address: form.address.trim(),
+      googleMapsUrl: trimmedMapsUrl || undefined,
       contactName: form.contactName.trim() || undefined,
       contactPhone: form.contactPhone.trim() || undefined,
       preferredWindowStart: form.preferredWindowStart || undefined,
@@ -115,6 +123,16 @@ export function BusinessFormDialog({ open, onOpenChange, business, onSaved }: Pr
           <div className="col-span-2 space-y-1.5">
             <Label htmlFor="biz-address">Address</Label>
             <Input id="biz-address" value={form.address} onChange={(e) => set("address", e.target.value)} placeholder="Street, landmark" />
+          </div>
+          <div className="col-span-2 space-y-1.5">
+            <Label htmlFor="biz-maps-url">Google Maps Location</Label>
+            <Input
+              id="biz-maps-url"
+              value={form.googleMapsUrl}
+              onChange={(e) => set("googleMapsUrl", e.target.value)}
+              placeholder="Paste Google Maps link"
+            />
+            <p className="text-xs text-muted">Paste the Google Maps link for the business location.</p>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="biz-contact">Contact name</Label>

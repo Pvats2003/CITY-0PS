@@ -134,6 +134,7 @@ export default function Settings() {
         capacityHoursPerDay: b.capacityHoursPerDay,
         contactName: b.contactName ?? "",
         contactPhone: b.contactPhone ?? "",
+        googleMapsUrl: b.googleMapsUrl ?? "",
       })),
     );
 
