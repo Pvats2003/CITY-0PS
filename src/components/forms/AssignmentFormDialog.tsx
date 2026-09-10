@@ -116,7 +116,13 @@ export function AssignmentFormDialog({ open, onOpenChange, date, existingAssignm
       date,
       businessId,
       foId,
-      rigId: rigId || undefined,
+      // Omit the key entirely when no rig is selected — `rigId: undefined`
+      // would be a real enumerable property, and Firestore's setDoc()
+      // rejects any document containing one client-side (no network call
+      // even attempted) unless ignoreUndefinedProperties is set, which it
+      // deliberately isn't (see src/auth/firebaseApp.ts) so malformed data
+      // fails loudly instead of being silently coerced.
+      ...(rigId ? { rigId } : {}),
       plannedStart,
       plannedEnd,
       priority: "normal",
