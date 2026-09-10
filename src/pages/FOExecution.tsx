@@ -54,6 +54,7 @@ import { useSyncStatus } from "@/data/useSyncStatus";
 import { useCollectionSyncStatus } from "@/data/useCollectionSyncStatus";
 import { useFosDiag } from "@/data/useFosDiag";
 import { FoDiagnosticPanel } from "@/components/FoDiagnosticPanel";
+import { isDiagnosticsEnabled } from "@/lib/diagnosticsAccess";
 import type { Assignment, EvidenceFile } from "@/types";
 
 type BottomTab = "today" | "sessions" | "issues" | "profile";
@@ -88,6 +89,9 @@ export default function FOExecution() {
   // outbox.ts's per-collection error map.
   const fosSync = useCollectionSyncStatus("fos");
   const fosDiag = useFosDiag();
+  // Developer/support tooling only — never part of the normal FO product
+  // experience. See src/lib/diagnosticsAccess.ts for how to opt in.
+  const diagnosticsEnabled = isDiagnosticsEnabled();
   const date = todayISO();
   const [tab, setTab] = useState<BottomTab>("today");
   const [selected, setSelected] = useState<string | null>(null);
@@ -223,7 +227,9 @@ export default function FOExecution() {
           <Link to="/fo/login" className="text-sm text-primary hover:underline">
             Go to sign in
           </Link>
-          <FoDiagnosticPanel requestedFoId={id} matchedFoId={null} matchedFoName={null} fosCount={data.fos.length} fosSync={fosSync} screen={screen} />
+          {diagnosticsEnabled && (
+            <FoDiagnosticPanel requestedFoId={id} matchedFoId={null} matchedFoName={null} fosCount={data.fos.length} fosSync={fosSync} screen={screen} />
+          )}
         </div>
       );
     }
@@ -242,14 +248,16 @@ export default function FOExecution() {
               <LogOut className="size-4" /> Sign out
             </Button>
           </div>
-          <FoDiagnosticPanel
-            requestedFoId={id}
-            matchedFoId={null}
-            matchedFoName={null}
-            fosCount={data.fos.length}
-            fosSync={fosSync}
-            screen={screen}
-          />
+          {diagnosticsEnabled && (
+            <FoDiagnosticPanel
+              requestedFoId={id}
+              matchedFoId={null}
+              matchedFoName={null}
+              fosCount={data.fos.length}
+              fosSync={fosSync}
+              screen={screen}
+            />
+          )}
         </div>
       );
     }
@@ -265,14 +273,16 @@ export default function FOExecution() {
           <RefreshCw className="size-8 text-muted animate-spin" />
           <div className="text-base font-semibold">Loading your field officer profile…</div>
           <p className="text-sm text-muted">Syncing with your city's data.</p>
-          <FoDiagnosticPanel
-            requestedFoId={id}
-            matchedFoId={null}
-            matchedFoName={null}
-            fosCount={data.fos.length}
-            fosSync={fosSync}
-            screen={screen}
-          />
+          {diagnosticsEnabled && (
+            <FoDiagnosticPanel
+              requestedFoId={id}
+              matchedFoId={null}
+              matchedFoName={null}
+              fosCount={data.fos.length}
+              fosSync={fosSync}
+              screen={screen}
+            />
+          )}
         </div>
       );
     }
@@ -294,14 +304,16 @@ export default function FOExecution() {
         <Button variant="secondary" onClick={() => logout()}>
           <LogOut className="size-4" /> Sign out
         </Button>
-        <FoDiagnosticPanel
-          requestedFoId={id}
-          matchedFoId={null}
-          matchedFoName={null}
-          fosCount={data.fos.length}
-          fosSync={fosSync}
-          screen={screen}
-        />
+        {diagnosticsEnabled && (
+          <FoDiagnosticPanel
+            requestedFoId={id}
+            matchedFoId={null}
+            matchedFoName={null}
+            fosCount={data.fos.length}
+            fosSync={fosSync}
+            screen={screen}
+          />
+        )}
       </div>
     );
   }
@@ -337,7 +349,7 @@ export default function FOExecution() {
 
       <SyncStatusBanner />
 
-      {!params.id && (
+      {!params.id && diagnosticsEnabled && (
         <div className="px-3 pt-2">
           <FoDiagnosticPanel requestedFoId={id} matchedFoId={fo.id} matchedFoName={fo.name} fosCount={data.fos.length} fosSync={fosSync} screen={screen} />
         </div>
