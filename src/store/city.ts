@@ -3,6 +3,7 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { id } from "@/lib/id";
 import { nowISO } from "@/lib/dates";
+import { omitUndefined } from "@/lib/omitUndefined";
 import type {
   CityData,
   Business,
@@ -166,9 +167,15 @@ export const useCity = create<CityStore>()(
           (s as any)[collection] = docs;
         }),
 
+      // omitUndefined: logActivity is called from dozens of sites across
+      // the app, many passing an optional field (businessId, foId, rigId,
+      // sessionId, issueId, detail, ...) that's frequently absent —
+      // Firestore's setDoc() rejects an explicit undefined value, so it
+      // must be stripped once, centrally, here (src/lib/omitUndefined.ts),
+      // rather than at every individual call site.
       logActivity: (e) =>
         set((s) => {
-          s.activity.unshift({ id: id("act"), at: e.at ?? nowISO(), ...e });
+          s.activity.unshift(omitUndefined({ id: id("act"), at: e.at ?? nowISO(), ...e }));
           if (s.activity.length > 2000) s.activity.length = 2000;
         }),
 

@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useCity } from "@/store/city";
 import type { CorrectiveActionType, QualityReview, QualityVerdict } from "@/types";
 import { nowISO } from "@/lib/dates";
+import { omitUndefined } from "@/lib/omitUndefined";
 import { ShieldCheck, ShieldAlert, ShieldX } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -35,9 +36,16 @@ export function QualityReviewDialog({ open, onOpenChange, review }: { open: bool
 
   function submit() {
     if (!review) return;
-    updateQualityReview(review.id, { verdict, notes: notes.trim() || undefined, reviewedAt: nowISO() });
+    // omitUndefined: a blank notes field must be OMITTED, not set to
+    // undefined — Firestore's setDoc() rejects the latter
+    // (src/lib/omitUndefined.ts). Note this means clearing a
+    // previously-set notes field back to blank via this dialog no longer
+    // clears it (it's simply omitted from the patch) — an accepted, safer
+    // trade-off vs. the prior behavior, which appeared to clear it locally
+    // but silently failed to sync and jammed the outbox.
+    updateQualityReview(review.id, omitUndefined({ verdict, notes: notes.trim() || undefined, reviewedAt: nowISO() }));
     if (verdict === "fail") {
-      const action = addCorrectiveAction({ qualityReviewId: review.id, type: correctiveType, notes: notes.trim() || undefined, status: "open" });
+      const action = addCorrectiveAction(omitUndefined({ qualityReviewId: review.id, type: correctiveType, notes: notes.trim() || undefined, status: "open" }));
       updateQualityReview(review.id, { correctiveActionId: action.id });
     }
     onOpenChange(false);

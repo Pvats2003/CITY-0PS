@@ -1,5 +1,6 @@
 import { useCity } from "@/store/city";
 import { nowISO } from "@/lib/dates";
+import { omitUndefined } from "@/lib/omitUndefined";
 import { autoQualityReview } from "./quality";
 import { categoryGroup, categoryLabel, ISSUE_TYPE_BY_GROUP } from "./rigTaxonomy";
 import { estimateIncidentLostHours } from "./rigGuardian";
@@ -45,29 +46,36 @@ export function startSessionForAssignment(
   const now = nowISO();
   const durationMin = (new Date(assignment.plannedEnd).getTime() - new Date(assignment.plannedStart).getTime()) / 60000;
 
-  const session = addSession({
-    assignmentId: assignment.id,
-    businessId: assignment.businessId,
-    foId: assignment.foId,
-    collectorId: assignment.collectorId,
-    rigId: assignment.rigId,
-    date: assignment.date,
-    startedAt: now,
-    plannedDurationMin: durationMin,
-    status: "active",
-    batteryPct: rig?.batteryPct ?? 90,
-    storagePct: rig?.storagePct ?? 20,
-    signal: "healthy",
-    checklistSetup: {
-      confirmedBusiness: true,
-      scannedRig: true,
-      checkedBattery: true,
-      checkedStorage: true,
-      confirmedCollector: true,
-      capturedEvidence: false,
-      ...checklist,
-    },
-  });
+  // omitUndefined: assignment.collectorId/rigId are optional and often
+  // absent (e.g. a rig-less assignment) — copying an absent one through
+  // verbatim would set it to `undefined`, which Firestore's setDoc()
+  // rejects the same way it rejected the assignment itself before that fix
+  // (see src/lib/omitUndefined.ts).
+  const session = addSession(
+    omitUndefined({
+      assignmentId: assignment.id,
+      businessId: assignment.businessId,
+      foId: assignment.foId,
+      collectorId: assignment.collectorId,
+      rigId: assignment.rigId,
+      date: assignment.date,
+      startedAt: now,
+      plannedDurationMin: durationMin,
+      status: "active",
+      batteryPct: rig?.batteryPct ?? 90,
+      storagePct: rig?.storagePct ?? 20,
+      signal: "healthy",
+      checklistSetup: {
+        confirmedBusiness: true,
+        scannedRig: true,
+        checkedBattery: true,
+        checkedStorage: true,
+        confirmedCollector: true,
+        capturedEvidence: false,
+        ...checklist,
+      },
+    }),
+  );
 
   updateAssignment(assignment.id, {
     status: "in_progress",
@@ -116,14 +124,18 @@ export function completeSession(sessionId: string) {
   }
 
   const { verdict, flags } = autoQualityReview(updated);
-  const review = addQualityReview({
-    sessionId,
-    businessId: session.businessId,
-    foId: session.foId,
-    verdict,
-    flags,
-    reviewedAt: verdict === "pass" ? now : undefined,
-  });
+  // omitUndefined: reviewedAt is only set on an auto-pass — Firestore's
+  // setDoc() rejects the explicit undefined otherwise (src/lib/omitUndefined.ts).
+  const review = addQualityReview(
+    omitUndefined({
+      sessionId,
+      businessId: session.businessId,
+      foId: session.foId,
+      verdict,
+      flags,
+      reviewedAt: verdict === "pass" ? now : undefined,
+    }),
+  );
 
   logActivity({
     type: "session_ended",
@@ -475,37 +487,45 @@ export function reportRigIncident(params: {
   const group = categoryGroup(params.category);
   const lostHours = params.lostHours ?? estimateIncidentLostHours(useCity.getState(), { assignmentId: params.assignmentId, severity: params.severity, discoveredAt: now });
 
-  const incident = addRigIncident({
-    rigId: params.rigId,
-    sessionId: params.sessionId,
-    assignmentId: params.assignmentId,
-    businessId: params.businessId,
-    foId: params.foId,
-    category: params.category,
-    group,
-    severity: params.severity,
-    discoveredAt: now,
-    discoveryStage: params.discoveryStage,
-    description: params.description,
-    evidence: params.evidence ?? [],
-    status: "open",
-    lostHours,
-  });
+  // omitUndefined: sessionId/assignmentId/businessId/foId are optional and
+  // frequently absent (e.g. reporting an incident with only a rigId) —
+  // Firestore's setDoc() rejects the explicit undefined that a plain
+  // passthrough would carry (src/lib/omitUndefined.ts).
+  const incident = addRigIncident(
+    omitUndefined({
+      rigId: params.rigId,
+      sessionId: params.sessionId,
+      assignmentId: params.assignmentId,
+      businessId: params.businessId,
+      foId: params.foId,
+      category: params.category,
+      group,
+      severity: params.severity,
+      discoveredAt: now,
+      discoveryStage: params.discoveryStage,
+      description: params.description,
+      evidence: params.evidence ?? [],
+      status: "open",
+      lostHours,
+    }),
+  );
 
-  const issue = addIssue({
-    type: ISSUE_TYPE_BY_GROUP[group],
-    severity: params.severity,
-    title: `${rig?.code ?? "Rig"}: ${categoryLabel(params.category)}`,
-    description: params.description || categoryLabel(params.category),
-    businessId: params.businessId,
-    foId: params.foId,
-    rigId: params.rigId,
-    sessionId: params.sessionId,
-    assignmentId: params.assignmentId,
-    owner: "You",
-    status: "open",
-    lostHours,
-  });
+  const issue = addIssue(
+    omitUndefined({
+      type: ISSUE_TYPE_BY_GROUP[group],
+      severity: params.severity,
+      title: `${rig?.code ?? "Rig"}: ${categoryLabel(params.category)}`,
+      description: params.description || categoryLabel(params.category),
+      businessId: params.businessId,
+      foId: params.foId,
+      rigId: params.rigId,
+      sessionId: params.sessionId,
+      assignmentId: params.assignmentId,
+      owner: "You",
+      status: "open",
+      lostHours,
+    }),
+  );
 
   updateRigIncident(incident.id, { linkedIssueId: issue.id });
 
@@ -557,17 +577,22 @@ export function saveRepairRecord(params: {
 }) {
   const { addRepairRecord, updateRigIncident, updateRig, logActivity, rigs } = useCity.getState();
   const rig = rigs.find((r) => r.id === params.rigId);
-  const record = addRepairRecord({
-    rigId: params.rigId,
-    incidentId: params.incidentId,
-    diagnosis: params.diagnosis,
-    repairAction: params.repairAction,
-    parts: params.parts,
-    beforeEvidence: params.beforeEvidence ?? [],
-    afterEvidence: params.afterEvidence ?? [],
-    notes: params.notes,
-    repairedAt: nowISO(),
-  });
+  // omitUndefined: parts/notes are optional and often left blank —
+  // Firestore's setDoc() rejects the explicit undefined that a plain
+  // passthrough would carry (src/lib/omitUndefined.ts).
+  const record = addRepairRecord(
+    omitUndefined({
+      rigId: params.rigId,
+      incidentId: params.incidentId,
+      diagnosis: params.diagnosis,
+      repairAction: params.repairAction,
+      parts: params.parts,
+      beforeEvidence: params.beforeEvidence ?? [],
+      afterEvidence: params.afterEvidence ?? [],
+      notes: params.notes,
+      repairedAt: nowISO(),
+    }),
+  );
   updateRigIncident(params.incidentId, { status: "testing", repairRecordId: record.id, correctiveAction: params.repairAction });
   updateRig(params.rigId, { deploymentStatus: "repair" });
   logActivity({

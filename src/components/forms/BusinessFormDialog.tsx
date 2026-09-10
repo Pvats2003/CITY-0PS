@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useCity } from "@/store/city";
 import { isGoogleMapsUrl } from "@/lib/googleMaps";
+import { omitUndefined } from "@/lib/omitUndefined";
 import type { Business } from "@/types";
 
 interface Props {
@@ -74,7 +75,11 @@ export function BusinessFormDialog({ open, onOpenChange, business, onSaved }: Pr
       return setError("That doesn't look like a Google Maps link. Paste a link from Google Maps (google.com/maps, maps.google.com, or a maps.app.goo.gl share link).");
     }
 
-    const payload = {
+    // omitUndefined: Firestore's setDoc() rejects a document containing an
+    // explicit `undefined` field value client-side — a blank optional
+    // field below must be OMITTED, not set to undefined (see
+    // src/lib/omitUndefined.ts).
+    const payload = omitUndefined({
       name: form.name.trim(),
       category: form.category.trim() || "General",
       area: form.area.trim(),
@@ -87,7 +92,7 @@ export function BusinessFormDialog({ open, onOpenChange, business, onSaved }: Pr
       capacityHoursPerDay: form.capacityHoursPerDay,
       notes: form.notes.trim() || undefined,
       active: form.active,
-    };
+    });
 
     if (business) {
       updateBusiness(business.id, payload);

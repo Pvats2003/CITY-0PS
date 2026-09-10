@@ -11,6 +11,7 @@ import { useCity } from "@/store/city";
 import { todayISO, fmtDate, fmtTime, fmtHours } from "@/lib/dates";
 import { buildSOD, buildMOD, buildEOD, buildTomorrowRecommendations } from "@/engine/reports";
 import { requestRigInspection } from "@/engine/workflows";
+import { omitUndefined } from "@/lib/omitUndefined";
 
 export default function Reports() {
   const data = useCity();
@@ -96,7 +97,10 @@ export default function Reports() {
     const kindMap = { sod, mod, eod, tomorrow: { recommendations: recs } } as const;
     const payload = (kindMap as Record<string, unknown>)[tab] ?? {};
     const reportKind = tab === "tomorrow" ? "eod" : (tab as "sod" | "mod" | "eod");
-    const report = addReport({ date, kind: reportKind, data: payload as Record<string, unknown>, narrative: tab === "eod" ? eod.narrative : undefined });
+    // omitUndefined (recursive): `data` can nest optional report fields
+    // (e.g. eod.rigPerformance.worstAffectedRig) left undefined — Firestore's
+    // setDoc() rejects those the same as a top-level one (src/lib/omitUndefined.ts).
+    const report = addReport(omitUndefined({ date, kind: reportKind, data: payload as Record<string, unknown>, narrative: tab === "eod" ? eod.narrative : undefined }));
     const blob = new Blob([JSON.stringify({ ...report, data: payload }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");

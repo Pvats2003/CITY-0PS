@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useCity } from "@/store/city";
+import { omitUndefined } from "@/lib/omitUndefined";
 import type { FieldOfficer } from "@/types";
 
 interface Props {
@@ -34,7 +35,9 @@ export function FOFormDialog({ open, onOpenChange, fo }: Props) {
 
   function submit() {
     if (!name.trim()) return setError("Name is required.");
-    const payload = { name: name.trim(), phone: phone.trim() || undefined, homeArea: homeArea.trim() || undefined, active };
+    // omitUndefined: a blank optional field must be OMITTED, not set to
+    // undefined — Firestore's setDoc() rejects the latter (src/lib/omitUndefined.ts).
+    const payload = omitUndefined({ name: name.trim(), phone: phone.trim() || undefined, homeArea: homeArea.trim() || undefined, active });
     if (fo) updateFO(fo.id, payload);
     else addFO(payload);
     onOpenChange(false);

@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useCity } from "@/store/city";
+import { omitUndefined } from "@/lib/omitUndefined";
 import type { IssueType, Severity } from "@/types";
 
 interface Props {
@@ -56,19 +57,24 @@ export function IssueFormDialog({ open, onOpenChange, defaults }: Props) {
 
   function submit() {
     if (!title.trim()) return setError("A short title is required.");
-    addIssue({
-      type,
-      severity,
-      title: title.trim(),
-      description: description.trim() || title.trim(),
-      businessId: businessId || undefined,
-      foId: foId || undefined,
-      rigId: defaults?.rigId,
-      sessionId: defaults?.sessionId,
-      assignmentId: defaults?.assignmentId,
-      owner: "You",
-      status: "open",
-    });
+    // omitUndefined: every field below is optional and often blank/absent
+    // — Firestore's setDoc() rejects an explicit undefined value, so these
+    // must be OMITTED, not set to undefined (see src/lib/omitUndefined.ts).
+    addIssue(
+      omitUndefined({
+        type,
+        severity,
+        title: title.trim(),
+        description: description.trim() || title.trim(),
+        businessId: businessId || undefined,
+        foId: foId || undefined,
+        rigId: defaults?.rigId,
+        sessionId: defaults?.sessionId,
+        assignmentId: defaults?.assignmentId,
+        owner: "You",
+        status: "open",
+      }),
+    );
     onOpenChange(false);
   }
 
