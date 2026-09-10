@@ -17,7 +17,8 @@
     "test:outbox-stale-entry-sanitization": "node tests/outbox-stale-entry-sanitization.emulator.mjs",
     "test:assignment-duplicate-creation": "node tests/assignment-duplicate-creation.emulator.mjs",
     "test:assignment-idempotency": "node tests/assignment-idempotency.emulator.mjs",
-    "test:evidence-capture-fix": "node tests/evidence-capture-fix.regression.mjs"
+    "test:evidence-capture-fix": "node tests/evidence-capture-fix.regression.mjs",
+    "test:media-sync-error": "node tests/media-sync-error.emulator.mjs"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.11",

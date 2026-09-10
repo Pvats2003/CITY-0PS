@@ -52,6 +52,7 @@ import { PostSessionCheckDialog } from "@/components/forms/PostSessionCheckDialo
 import { EvidenceThumb } from "@/components/forms/EvidenceReviewDialog";
 import { useAuth } from "@/auth/AuthContext";
 import { useSyncStatus } from "@/data/useSyncStatus";
+import { useMediaSyncStatus } from "@/data/useMediaSyncStatus";
 import { useCollectionSyncStatus } from "@/data/useCollectionSyncStatus";
 import { useFosDiag } from "@/data/useFosDiag";
 import { FoDiagnosticPanel } from "@/components/FoDiagnosticPanel";
@@ -349,6 +350,7 @@ export default function FOExecution() {
       </header>
 
       <SyncStatusBanner />
+      <MediaSyncBanner />
 
       {!params.id && diagnosticsEnabled && (
         <div className="px-3 pt-2">
@@ -405,6 +407,49 @@ function SyncStatusBanner() {
     <div className="flex items-center gap-2 px-3 py-2 bg-info-bg border-b border-info/20 text-xs text-info">
       <RefreshCw className="size-3.5 shrink-0 animate-spin" />
       Sync pending — {pendingCount} change{pendingCount === 1 ? "" : "s"} waiting to upload.
+    </div>
+  );
+}
+
+/** Photo-specific status, deliberately separate from SyncStatusBanner
+ * above — that banner's "N changes" count is the combined Firestore-
+ * document-plus-photo total (see useSyncStatus.ts) and was reported as
+ * genuinely confusing in production (an FO has no way to tell "2 other
+ * changes" from "2 of my photos still haven't uploaded"). This banner
+ * only ever talks about photos, in FO-safe language — real captured
+ * errors (see data/mediaSyncStatus.ts), never a raw Firebase message or
+ * path. */
+function MediaSyncBanner() {
+  const { status } = useSyncStatus();
+  const { pendingCount, failedCount, latestError, retry } = useMediaSyncStatus();
+  if (pendingCount === 0) return null;
+  if (failedCount > 0) {
+    return (
+      <button
+        type="button"
+        onClick={retry}
+        className="w-full flex items-center gap-2 px-3 py-2 bg-critical-bg border-b border-critical/20 text-xs text-critical text-left"
+      >
+        <ShieldAlert className="size-3.5 shrink-0" />
+        <span>
+          {latestError?.humanMessage ?? "Photo upload failed. Retry or contact your Manager."} {failedCount} photo{failedCount === 1 ? "" : "s"} waiting
+          — tap to retry.
+        </span>
+      </button>
+    );
+  }
+  if (status === "offline") {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2 bg-warning-bg border-b border-warning/20 text-xs text-warning">
+        <WifiOff className="size-3.5 shrink-0" />
+        Photos saved locally — waiting to upload. Will upload automatically when connected.
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 bg-info-bg border-b border-info/20 text-xs text-info">
+      <RefreshCw className="size-3.5 shrink-0 animate-spin" />
+      Uploading photos… ({pendingCount})
     </div>
   );
 }
@@ -515,7 +560,8 @@ function PhotoCapture({ label, files, onChange }: { label: string; files: Eviden
     onChange([...files, ...items]);
   }
   const allUploaded = files.length > 0 && files.every((f) => f.uploadStatus == null || f.uploadStatus === "uploaded");
-  const anyPending = files.some((f) => f.uploadStatus === "local_only" || f.uploadStatus === "uploading");
+  const anyUploading = files.some((f) => f.uploadStatus === "uploading");
+  const anyLocalOnly = files.some((f) => f.uploadStatus === "local_only");
   const anyFailed = files.some((f) => f.uploadStatus === "upload_failed");
 
   return (
@@ -527,12 +573,17 @@ function PhotoCapture({ label, files, onChange }: { label: string; files: Eviden
       {allUploaded && <CheckCircle2 className="size-4 text-success" />}
       {!allUploaded && anyFailed && (
         <span className="text-[11px] text-critical flex items-center gap-1">
-          <ShieldAlert className="size-3.5" /> Upload failed — retrying
+          <ShieldAlert className="size-3.5" /> Photo upload failed
         </span>
       )}
-      {!allUploaded && !anyFailed && anyPending && (
+      {!allUploaded && !anyFailed && anyUploading && (
         <span className="text-[11px] text-muted flex items-center gap-1">
-          <RefreshCw className="size-3.5 animate-spin" /> Pending upload
+          <RefreshCw className="size-3.5 animate-spin" /> Uploading photos…
+        </span>
+      )}
+      {!allUploaded && !anyFailed && !anyUploading && anyLocalOnly && (
+        <span className="text-[11px] text-muted flex items-center gap-1">
+          <RefreshCw className="size-3.5" /> Photos saved locally — waiting to upload
         </span>
       )}
     </div>
@@ -570,6 +621,7 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
   const session = data.sessions.find((s) => s.id === assignment.sessionId && s.status !== "completed") ?? (assignment.sessionId ? data.sessions.find((s) => s.id === assignment.sessionId) : undefined);
   const assignmentEvidence = useMemo(() => data.evidence.filter((e) => e.assignmentId === assignment.id), [data.evidence, assignment.id]);
   const stage = useMemo(() => deriveExecutionStage(assignment, data.evidence, session), [assignment, data.evidence, session]);
+  const mediaSync = useMediaSyncStatus();
 
   const [issueOpen, setIssueOpen] = useState(false);
   const [preflightIssueOpen, setPreflightIssueOpen] = useState(false);
@@ -705,7 +757,7 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
           {sessionEndEvidence ? (
             <div className="flex flex-wrap gap-2">
               {sessionEndEvidence.files.map((f) => (
-                <EvidenceThumb key={f.id} file={f} />
+                <EvidenceThumb key={f.id} file={f} onRetry={mediaSync.retry} />
               ))}
             </div>
           ) : (

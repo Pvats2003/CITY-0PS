@@ -350,6 +350,16 @@ export interface EvidenceFile {
   /** Persistent HTTPS download URL, set once uploadStatus is "uploaded" —
    * the one reference that resolves from any device/session. */
   downloadUrl?: string;
+  /** Set only while uploadStatus === "upload_failed" — the FO-safe, human-
+   * readable reason (see data/mediaSyncStatus.ts's describeStorageErrorForFO()).
+   * Never a raw Firebase message; cleared the moment a retry starts or
+   * succeeds. Safe to show directly in FO-facing UI. */
+  uploadErrorReason?: string;
+  /** Set only while uploadStatus === "upload_failed" — the raw Firebase
+   * Storage error code (e.g. "storage/unauthorized"), for Manager/debug
+   * visibility only. Never rendered in FO-facing UI. Cleared alongside
+   * uploadErrorReason. */
+  uploadErrorCode?: string;
 }
 
 /** What step of execution this evidence record proves. ARRIVAL/LOCATION/

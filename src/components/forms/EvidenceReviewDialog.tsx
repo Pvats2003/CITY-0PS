@@ -20,10 +20,47 @@ import type { Evidence, EvidenceFile } from "@/types";
  * placeholder instead, since that's exactly the known cross-device gap
  * this phase closes for uploaded photos and documents for ones still in
  * flight. */
-export function EvidenceThumb({ file }: { file: EvidenceFile }) {
+/** The FO-safe status text for one file's upload state — never a raw
+ * Firebase message. `file.uploadErrorReason` (set by mediaOutbox.ts's
+ * setFileUploadStatus() from mediaSyncStatus.ts's
+ * describeStorageErrorForFO()) is already this same kind of human text;
+ * falling back to a generic phrase only covers a record from before that
+ * field existed. */
+function evidenceFileStatusText(file: EvidenceFile): string {
+  switch (file.uploadStatus) {
+    case "local_only":
+      return "Photo saved locally — waiting to upload";
+    case "uploading":
+      return "Uploading photo…";
+    case "upload_failed":
+      return file.uploadErrorReason ?? "Photo upload failed. Retry or contact your Manager.";
+    case "uploaded":
+    default:
+      return "Uploaded";
+  }
+}
+
+export function EvidenceThumb({
+  file,
+  onRetry,
+  showTechnicalDetail,
+}: {
+  file: EvidenceFile;
+  /** Present only on FO-facing surfaces where a failed upload can be
+   * retried in place — see FOExecution.tsx. Omit to render a plain,
+   * non-interactive badge (e.g. the Manager's review dialog, which has no
+   * "retry on the FO's behalf" action). */
+  onRetry?: () => void;
+  /** Manager/debug surfaces only — appends the raw Firebase error code to
+   * the tooltip. Never set this from FO-facing code. */
+  showTechnicalDetail?: boolean;
+}) {
   const [broken, setBroken] = useState(false);
   const src = file.downloadUrl ?? file.localUrl;
   const status = file.uploadStatus;
+  const statusText = evidenceFileStatusText(file);
+  const tooltip = showTechnicalDetail && status === "upload_failed" && file.uploadErrorCode ? `${statusText} (${file.uploadErrorCode})` : statusText;
+  const failed = status === "upload_failed";
 
   return (
     <div className="relative">
@@ -36,17 +73,20 @@ export function EvidenceThumb({ file }: { file: EvidenceFile }) {
         </div>
       )}
       {status && status !== "uploaded" && (
-        <div
+        <button
+          type="button"
+          disabled={!(failed && onRetry)}
+          onClick={failed ? onRetry : undefined}
+          title={failed && onRetry ? `${tooltip} — tap to retry` : tooltip}
           className={`absolute -bottom-1.5 -right-1.5 flex items-center justify-center size-5 rounded-full border border-border ${
-            status === "upload_failed" ? "bg-critical-bg text-critical" : "bg-warning-bg text-warning"
-          }`}
-          title={status === "local_only" ? "Pending upload" : status === "uploading" ? "Uploading…" : "Upload failed — retrying"}
+            failed ? "bg-critical-bg text-critical" : "bg-warning-bg text-warning"
+          } ${failed && onRetry ? "cursor-pointer" : "cursor-default"}`}
         >
-          {status === "upload_failed" ? <CloudAlert className="size-3" /> : <UploadCloud className="size-3" />}
-        </div>
+          {failed ? <CloudAlert className="size-3" /> : <UploadCloud className="size-3" />}
+        </button>
       )}
       {status === "uploaded" && (
-        <div className="absolute -bottom-1.5 -right-1.5 flex items-center justify-center size-5 rounded-full border border-border bg-success-bg text-success" title="Uploaded">
+        <div className="absolute -bottom-1.5 -right-1.5 flex items-center justify-center size-5 rounded-full border border-border bg-success-bg text-success" title={statusText}>
           <CloudCheck className="size-3" />
         </div>
       )}
@@ -142,7 +182,7 @@ export function EvidenceReviewDialog({ open, onOpenChange, assignmentId }: Props
                 {e.files.length > 0 ? (
                   <div className="flex flex-wrap gap-1.5">
                     {e.files.map((f) => (
-                      <EvidenceThumb key={f.id} file={f} />
+                      <EvidenceThumb key={f.id} file={f} showTechnicalDetail />
                     ))}
                   </div>
                 ) : (

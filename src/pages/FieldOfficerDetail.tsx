@@ -4,6 +4,7 @@ import { ArrowLeft, Pencil, Smartphone, Lightbulb, CheckCircle2, Circle, PlayCir
 import { AlertTriangle } from "lucide-react";
 import { useCity } from "@/store/city";
 import { useCollectionSyncStatus } from "@/data/useCollectionSyncStatus";
+import { useMediaSyncStatus } from "@/data/useMediaSyncStatus";
 import { computeFOStats, foInsightText } from "@/engine/insights";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,20 @@ export default function FieldOfficerDetail() {
   const date = todayISO();
 
   const assignmentsSync = useCollectionSyncStatus("assignments");
+  // Reflects THIS browser/device's own local media outbox — not the FO's
+  // remote device. A failed photo upload never reaches Firestore at all
+  // (evidence sync is deliberately deferred until every file uploads — see
+  // syncEngine.ts's evidenceReadyToSync), so there is currently no
+  // Firestore-visible signal a genuinely separate Manager device could
+  // read to know a specific FO's upload is failing. This banner is
+  // meaningful when this page is the same browser session that captured
+  // the evidence (e.g. the "Execution Mode" FO preview at this route, or a
+  // shared test/demo session) — surfacing that gap accurately is better
+  // than a banner that silently never fires for a real cross-device
+  // Manager. Making this genuinely cross-device would mean writing SOME
+  // signal to Firestore on failure, which is a deferred-sync architecture
+  // change explicitly out of scope here.
+  const mediaSync = useMediaSyncStatus();
   const stats = useMemo(() => (fo ? computeFOStats(data, fo) : null), [data, fo]);
   const events = useMemo(() => data.activity.filter((e) => e.foId === id).sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()), [data.activity, id]);
   const bizMap = new Map(data.businesses.map((b) => [b.id, b]));
@@ -124,6 +139,28 @@ export default function FieldOfficerDetail() {
                 <div className="flex items-start gap-2 rounded-md border border-critical/20 bg-critical-bg px-3 py-2 text-xs text-critical">
                   <AlertTriangle className="size-3.5 shrink-0 mt-0.5" />
                   <span>Assignments aren't syncing to the server ({assignmentsSync.error}) — anything shown below may not exist on {fo.name}'s device yet.</span>
+                </div>
+              )}
+              {mediaSync.failedCount > 0 && (
+                <div className="rounded-md border border-critical/20 bg-critical-bg px-3 py-2 text-xs text-critical">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="size-3.5 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-medium">Photo uploads are failing</div>
+                      <div>
+                        {mediaSync.failedCount} photo{mediaSync.failedCount === 1 ? "" : "s"} waiting to upload
+                        {mediaSync.latestError ? ` — ${mediaSync.latestError.humanMessage}` : "."}
+                      </div>
+                    </div>
+                  </div>
+                  {mediaSync.latestError && (
+                    <details className="mt-1.5 pl-5">
+                      <summary className="cursor-pointer text-critical/80">Technical details</summary>
+                      <div className="mt-1 text-critical/80 font-mono text-[10px] break-all">
+                        {mediaSync.latestError.code}: {mediaSync.latestError.technicalMessage}
+                      </div>
+                    </details>
+                  )}
                 </div>
               )}
               {today.length === 0 && <div className="text-sm text-muted py-4 text-center">Nothing scheduled today.</div>}
