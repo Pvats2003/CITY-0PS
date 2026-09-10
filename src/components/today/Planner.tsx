@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   RotateCcw,
@@ -70,6 +70,26 @@ export function Planner() {
   // worked. See outbox.ts's drainOutbox for how a failed write here gets
   // reported.
   const assignmentsSync = useCollectionSyncStatus("assignments");
+  // In-flight guard against rapid repeated clicks on "Approve Plan" before
+  // the confirm dialog visibly closes — same pattern as
+  // AssignmentFormDialog's submittingRef: a ref for the actual
+  // (synchronous) re-entrancy guard, state only for the visible disabled
+  // styling. Defense-in-depth alongside the real fix: store/city.ts's
+  // approvePlan() derives each assignment's persisted id from its logical
+  // identity, so a duplicate invocation can no longer create a second
+  // Firestore document even without this guard.
+  const approvingRef = useRef(false);
+  const [approving, setApproving] = useState(false);
+
+  // Reset the guard whenever the confirm dialog is (re)opened, so a later,
+  // separate approval attempt on a different date/draft is never
+  // permanently blocked by an earlier one.
+  useEffect(() => {
+    if (approveDialogOpen) {
+      approvingRef.current = false;
+      setApproving(false);
+    }
+  }, [approveDialogOpen]);
 
   // Resume an existing draft for this date (survives navigating away and
   // back — DRAFT is real persisted state, not component-local scratch).
@@ -214,6 +234,9 @@ export function Planner() {
   }
 
   function confirmApprove() {
+    if (approvingRef.current) return;
+    approvingRef.current = true;
+    setApproving(true);
     const pid = persistDraft("draft");
     approvePlan(pid, "You");
     setApproveDialogOpen(false);
@@ -517,7 +540,9 @@ export function Planner() {
             <Button variant="ghost" onClick={() => setApproveDialogOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={confirmApprove}>Approve Plan</Button>
+            <Button onClick={confirmApprove} disabled={approving}>
+              Approve Plan
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

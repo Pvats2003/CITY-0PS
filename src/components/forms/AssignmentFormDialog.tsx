@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -50,6 +50,20 @@ export function AssignmentFormDialog({ open, onOpenChange, date, existingAssignm
   const [startTime, setStartTime] = useState(hhmmFromISO(defaults?.plannedStart) || DEFAULT_START);
   const [endTime, setEndTime] = useState(hhmmFromISO(defaults?.plannedEnd) || DEFAULT_END);
   const [error, setError] = useState<string | null>(null);
+  // In-flight guard against rapid repeated clicks on "Add assignment"
+  // before the dialog visibly closes. A ref (checked synchronously, at
+  // the very top of submit()) is the actual re-entrancy guard — React's
+  // `disabled` prop update is a state change that only takes effect after
+  // the next render, which is too late to stop a second click event that
+  // fires before that render happens. `submitting` mirrors it purely for
+  // the visible disabled styling. This is defense-in-depth alongside the
+  // real fix: store/city.ts's addAssignment()/approvePlan() are
+  // idempotent by the assignment's logical identity, so even without this
+  // guard a duplicate submission can no longer create a second Firestore
+  // document — but disabling the button is still the right UX, and closes
+  // the window entirely rather than relying on the data layer alone.
+  const submittingRef = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -59,6 +73,8 @@ export function AssignmentFormDialog({ open, onOpenChange, date, existingAssignm
     setStartTime(hhmmFromISO(defaults?.plannedStart) || DEFAULT_START);
     setEndTime(hhmmFromISO(defaults?.plannedEnd) || DEFAULT_END);
     setError(null);
+    submittingRef.current = false;
+    setSubmitting(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -83,6 +99,7 @@ export function AssignmentFormDialog({ open, onOpenChange, date, existingAssignm
       : null;
 
   function submit() {
+    if (submittingRef.current) return;
     if (!foId) return setError("Select a Field Officer.");
     if (!businessId) return setError("Select a business.");
     if (!startTime || !endTime) return setError("Set a start and end time.");
@@ -129,6 +146,8 @@ export function AssignmentFormDialog({ open, onOpenChange, date, existingAssignm
       status: "planned",
       createdAt: nowISO(),
     };
+    submittingRef.current = true;
+    setSubmitting(true);
     onCreate(assignment);
     onOpenChange(false);
   }
@@ -228,7 +247,9 @@ export function AssignmentFormDialog({ open, onOpenChange, date, existingAssignm
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={submit}>Add assignment</Button>
+          <Button onClick={submit} disabled={submitting}>
+            Add assignment
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

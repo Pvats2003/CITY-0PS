@@ -4,6 +4,7 @@ import { immer } from "zustand/middleware/immer";
 import { id } from "@/lib/id";
 import { nowISO } from "@/lib/dates";
 import { omitUndefined } from "@/lib/omitUndefined";
+import { deriveAssignmentId } from "@/lib/assignmentIdentity";
 import type {
   CityData,
   Business,
@@ -271,20 +272,48 @@ export const useCity = create<CityStore>()(
           if (r) Object.assign(r, patch);
         }),
 
+      // Idempotent by construction: the persisted id is a DETERMINISTIC
+      // function of the assignment's logical identity (businessId, foId,
+      // date, plannedStart, plannedEnd, rigId — see
+      // src/lib/assignmentIdentity.ts), never a fresh random id(). A
+      // repeated call for the same logical visit (a rapid double-click, a
+      // retry after an earlier attempt looked like it failed, two tabs
+      // racing) always computes the SAME id and, finding it already
+      // present, is a no-op — it does NOT overwrite the existing record,
+      // so any real progress since creation (status, actualArrivalAt,
+      // sessionId, ...) is never clobbered by a stale resubmission. This
+      // is what fixed the production bug where the same manual "Add
+      // assignment" request, retried across this session's testing, had
+      // created 3 separate Firestore documents for one visit — every
+      // existing random `asg_*` id from before this fix keeps working
+      // unchanged, since lookups/updates only ever operate on whatever id
+      // a record carries.
       addAssignment: (a) => {
-        const item: Assignment = { ...a, id: id("asg"), createdAt: nowISO() };
+        const assignmentId = deriveAssignmentId(a);
+        let created = false;
+        let result: Assignment | undefined;
         set((s) => {
+          const existing = s.assignments.find((x) => x.id === assignmentId);
+          if (existing) {
+            result = existing;
+            return;
+          }
+          const item: Assignment = { ...a, id: assignmentId, createdAt: nowISO() };
           s.assignments.push(item);
+          result = item;
+          created = true;
         });
-        get().logActivity({
-          type: "assignment_created",
-          entityKind: "assignment",
-          entityId: item.id,
-          businessId: item.businessId,
-          foId: item.foId,
-          summary: `Assignment created`,
-        });
-        return item;
+        if (created && result) {
+          get().logActivity({
+            type: "assignment_created",
+            entityKind: "assignment",
+            entityId: result.id,
+            businessId: result.businessId,
+            foId: result.foId,
+            summary: `Assignment created`,
+          });
+        }
+        return result!;
       },
       updateAssignment: (aid, patch) =>
         set((s) => {
@@ -405,21 +434,39 @@ export const useCity = create<CityStore>()(
           if (p) Object.assign(p, patch);
         }),
 
+      // Same idempotency guarantee as addAssignment (see its comment): each
+      // draft assignment's FINAL, persisted id is derived deterministically
+      // from its logical identity, not the temporary id() it was given
+      // when the draft was built (by AssignmentFormDialog's manual-add flow
+      // or engine/planner.ts's proposeDailyPlan()). Approving the SAME
+      // logical plan more than once — a rapid double-click on "Approve
+      // Plan", or a Manager re-running "Generate AI Recommendations" +
+      // "Approve" for a date they'd already approved because an earlier
+      // attempt looked like it had failed — recomputes the SAME ids for
+      // each assignment and finds them already present, so no additional
+      // Firestore documents are ever created. Different logical
+      // assignments (a different time slot, a different rig) still get
+      // their own distinct ids and are never collapsed together — the
+      // identity key is the full six-field tuple, not just business+FO.
       approvePlan: (planId, approvedBy) => {
         const plan = get().plans.find((p) => p.id === planId);
         if (!plan?.draftAssignments?.length) return;
         const now = nowISO();
         const draft = plan.draftAssignments;
+        const finalAssignmentIds: string[] = [];
         set((s) => {
           for (const a of draft) {
+            const assignmentId = deriveAssignmentId(a);
+            finalAssignmentIds.push(assignmentId);
+            if (s.assignments.some((x) => x.id === assignmentId)) continue;
             // status "planned" -> "confirmed": the plan is no longer a
             // proposal, it's what the FO will actually execute tomorrow.
-            s.assignments.push({ ...a, status: a.status === "planned" ? "confirmed" : a.status });
+            s.assignments.push({ ...a, id: assignmentId, status: a.status === "planned" ? "confirmed" : a.status });
           }
           const p = s.plans.find((x) => x.id === planId);
           if (p) {
             p.status = "approved";
-            p.assignmentIds = draft.map((a) => a.id);
+            p.assignmentIds = finalAssignmentIds;
             p.approvedBy = approvedBy;
             p.approvedAt = now;
             p.publishedAt = now;
