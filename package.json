@@ -13,7 +13,8 @@
     "test:assignment-fo-visibility": "node tests/assignment-fo-visibility.regression.mjs",
     "test:manager-entity-persistence": "node tests/manager-entity-persistence.emulator.mjs",
     "test:planner-assignment-persistence": "node tests/planner-assignment-persistence.emulator.mjs",
-    "test:outbox-resilience": "node tests/outbox-resilience.emulator.mjs"
+    "test:outbox-resilience": "node tests/outbox-resilience.emulator.mjs",
+    "test:outbox-stale-entry-sanitization": "node tests/outbox-stale-entry-sanitization.emulator.mjs"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.11",

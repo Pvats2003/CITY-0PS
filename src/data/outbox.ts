@@ -193,7 +193,23 @@ let drainQueued = false;
  * assignment entry. The broken entry itself is never deleted — it keeps
  * reporting a real SYNC ERROR for its own collection until the
  * application code that produced it is fixed — but it no longer holds
- * every other collection's valid writes hostage. */
+ * every other collection's valid writes hostage.
+ *
+ * Also re-sanitizes `entry.data` with omitUndefined() here, in addition to
+ * enqueue()'s own sanitization above — NOT redundant. enqueue() only
+ * protects writes made by the CURRENT build; it cannot retroactively clean
+ * bytes a previous, buggy build already wrote into this browser's
+ * IndexedDB before a fix shipped. That's exactly what happened in
+ * production: an assignment queued by the pre-fix proposeDailyPlan() (see
+ * engine/planner.ts) sat in the outbox with an explicit `collectorId:
+ * undefined`, survived the deploy untouched (a deploy changes the app's
+ * code, not a viewer's already-written IndexedDB), and kept failing with
+ * "invalid-argument" on every drain thereafter — proving the construction
+ * fix and the enqueue()-time backstop alone were insufficient. Sanitizing
+ * again right here, immediately before the write, means it doesn't matter
+ * how old an entry is or which build wrote it: nothing manual (no
+ * clearing the outbox, no touching IndexedDB by hand) is ever required to
+ * recover once the underlying bug is fixed. */
 export async function drainOutbox(backend: RemoteBackend): Promise<void> {
   if (draining) {
     drainQueued = true;
@@ -208,7 +224,7 @@ export async function drainOutbox(backend: RemoteBackend): Promise<void> {
       if (!entry) continue;
       try {
         if (entry.data === null) await backend.deleteDoc(entry.collection, entry.id);
-        else await backend.putDoc(entry.collection, entry.id, entry.data);
+        else await backend.putDoc(entry.collection, entry.id, omitUndefined(entry.data));
         await del(key);
         clearSyncError(entry.collection);
       } catch (err) {

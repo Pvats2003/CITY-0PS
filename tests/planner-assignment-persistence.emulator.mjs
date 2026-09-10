@@ -51,7 +51,7 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { readFileSync } from "node:fs";
 import { initializeTestEnvironment, assertSucceeds } from "@firebase/rules-unit-testing";
-import { doc, setDoc, getDoc } from "firebase/firestore";
+import { doc, setDoc, getDoc, collection, query, where, getDocs } from "firebase/firestore";
 
 const EMULATOR_PORT = 8080;
 const PROJECT_ID = "city-ops-planner-assignment-test";
@@ -221,6 +221,36 @@ async function main() {
     await assertSucceeds(setDoc(doc(managerDb, "assignments", withNeither.id), withNeither, { merge: true }));
     check(true, "bare AI-proposed assignment setDoc() succeeded — THIS is the exact case that was silently breaking every Planner-approved plan in production");
 
+    console.log("\n[B2] AI-proposed assignment with a matching COLLECTOR but NO deployable rig:");
+    const collectorOnly = buildPlannerAssignment({
+      id: "asg_ai_collector_only",
+      foId: "FO_RJT001",
+      businessId: "biz_2b",
+      date: "2026-09-11",
+      collectorId: "COL_2",
+      rigId: undefined,
+    });
+    check(collectorOnly.collectorId === "COL_2", "collectorId carried through");
+    check(!("rigId" in collectorOnly), "rigId omitted entirely (not even undefined)");
+    assertNoUndefinedDeep(collectorOnly, "collector-only AI-proposed assignment");
+    await assertSucceeds(setDoc(doc(managerDb, "assignments", collectorOnly.id), collectorOnly, { merge: true }));
+    check(true, "collector-only AI-proposed assignment setDoc() succeeded");
+
+    console.log("\n[B3] AI-proposed assignment with a deployable RIG but NO matching collector:");
+    const rigOnly = buildPlannerAssignment({
+      id: "asg_ai_rig_only",
+      foId: "FO_RJT001",
+      businessId: "biz_2c",
+      date: "2026-09-11",
+      collectorId: undefined,
+      rigId: "RIG_2",
+    });
+    check(!("collectorId" in rigOnly), "collectorId omitted entirely (not even undefined)");
+    check(rigOnly.rigId === "RIG_2", "rigId carried through");
+    assertNoUndefinedDeep(rigOnly, "rig-only AI-proposed assignment");
+    await assertSucceeds(setDoc(doc(managerDb, "assignments", rigOnly.id), rigOnly, { merge: true }));
+    check(true, "rig-only AI-proposed assignment setDoc() succeeded");
+
     console.log("\n[C] Persisted document has the correct foId and date:");
     const stored = await getDoc(doc(managerDb, "assignments", withNeither.id));
     check(stored.exists(), "bare AI-proposed assignment document exists in Firestore");
@@ -237,6 +267,18 @@ async function main() {
     check(true, "approvePlan()-merged assignment setDoc() succeeded");
     const storedApproved = await getDoc(doc(managerDb, "assignments", approved.id));
     check(storedApproved.data()?.status === "confirmed", "approved assignment persisted with confirmed status");
+
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), "users", "fo-uid"), { role: "FIELD_OFFICER", foId: "FO_RJT001" });
+    });
+
+    console.log("\n[FO-visibility] The Planner-approved assignment (asg_ai_bare, now confirmed) is visible to FO_RJT001 via the REAL ownership-scoped query firebaseBackend.ts uses:");
+    const foDb = testEnv.authenticatedContext("fo-uid").firestore();
+    const foQuery = query(collection(foDb, "assignments"), where("foId", "==", "FO_RJT001"));
+    const foSnap = await assertSucceeds(getDocs(foQuery));
+    const foIds = foSnap.docs.map((d) => d.id);
+    check(foIds.includes(approved.id), "FO_RJT001's scoped query returns the approved, Planner-created assignment (asg_ai_bare)");
+    check(foIds.includes(withBoth.id), "FO_RJT001's scoped query also returns the full AI-proposed assignment");
 
     console.log("\n[E-contrast] The OLD buggy proposeDailyPlan() construction (`collectorId: collector?.id, rigId: rig?.id`) still fails against this same emulator/rules:");
     const buggy = buildPlannerAssignmentPreFixBuggy({
