@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Radio, Battery, HardDrive, Wifi, Search } from "lucide-react";
+import { Radio, Cpu, Search } from "lucide-react";
 import { PageHeader } from "@/components/shared/PageHeader";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge } from "@/components/status";
-import { Progress } from "@/components/ui/progress";
 import { useCity } from "@/store/city";
 import { fmtDateTime, fmtDuration } from "@/lib/dates";
 
@@ -67,6 +66,7 @@ export default function Sessions() {
                 const elapsedMin = Math.floor((Date.now() - new Date(s.startedAt).getTime()) / 60000);
                 const h = Math.floor(elapsedMin / 60);
                 const m = elapsedMin % 60;
+                const rig = rigMap.get(s.rigId ?? "");
                 return (
                   <Link key={s.id} to={`/sessions/${s.id}`}>
                     <Card className="p-4 h-full hover:border-border-strong transition-colors border-info/30">
@@ -83,15 +83,11 @@ export default function Sessions() {
                         {h}h {m}m
                       </div>
                       <div className="text-xs text-muted">of {fmtDuration(s.plannedDurationMin)} planned</div>
-                      <div className="space-y-2 mt-3">
-                        <MiniBar icon={Battery} label="Battery" value={s.batteryPct} tone={s.batteryPct < 30 ? "critical" : "default"} />
-                        <MiniBar icon={HardDrive} label="Storage" value={s.storagePct} tone={s.storagePct > 85 ? "warning" : "default"} />
-                      </div>
-                      <div className="flex items-center gap-1.5 text-xs mt-2.5">
-                        <Wifi className={`size-3.5 ${s.signal === "healthy" ? "text-success" : "text-warning"}`} />
-                        {s.signal === "healthy" ? "Signal healthy" : "Signal intermittent"}
-                        {rigMap.get(s.rigId ?? "") && <span className="text-muted ml-auto">{rigMap.get(s.rigId ?? "")?.code}</span>}
-                      </div>
+                      {rig && (
+                        <div className="flex items-center gap-1.5 text-xs mt-2.5 text-muted">
+                          <Cpu className="size-3.5" /> {rig.code}
+                        </div>
+                      )}
                     </Card>
                   </Link>
                 );
@@ -151,27 +147,6 @@ export default function Sessions() {
           </Card>
         </div>
       </div>
-    </div>
-  );
-}
-
-function MiniBar({
-  icon: Icon,
-  label,
-  value,
-  tone,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  value: number;
-  tone: "default" | "critical" | "warning";
-}) {
-  return (
-    <div className="flex items-center gap-2 text-xs">
-      <Icon className={`size-3.5 ${tone === "critical" ? "text-critical" : tone === "warning" ? "text-warning" : "text-muted"}`} />
-      <span className="text-muted w-12 shrink-0">{label}</span>
-      <Progress value={value} className="flex-1 h-1.5" indicatorClassName={tone === "critical" ? "bg-critical" : tone === "warning" ? "bg-warning" : undefined} />
-      <span className="tabular-nums w-8 text-right">{value}%</span>
     </div>
   );
 }

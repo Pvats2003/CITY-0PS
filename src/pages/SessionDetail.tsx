@@ -2,9 +2,6 @@ import { useMemo, useRef, useState } from "react";
 import { useParams, Link, Navigate } from "react-router-dom";
 import {
   ArrowLeft,
-  Battery,
-  HardDrive,
-  Wifi,
   User,
   Users as UsersIcon,
   Cpu,
@@ -22,12 +19,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/status";
-import { Progress } from "@/components/ui/progress";
 import { ActivityTimeline } from "@/components/shared/ActivityTimeline";
 import { IssueFormDialog } from "@/components/forms/IssueFormDialog";
 import { PostSessionCheckDialog } from "@/components/forms/PostSessionCheckDialog";
 import { fmtDate, fmtTime, fmtDuration, fmtHours } from "@/lib/dates";
 import { sessionInsightText } from "@/engine/insights";
+import { buildRigSummary } from "@/engine/rigGuardian";
+import { toDeployability } from "@/engine/rigTaxonomy";
+import { RigDeployabilityBadge } from "@/components/rigs/RigDeployabilityBadge";
 import { id as genId } from "@/lib/id";
 import { downloadJSON } from "@/lib/csv";
 import { stashPendingFile, takePendingFile } from "@/lib/pendingFileBlobs";
@@ -56,6 +55,7 @@ export default function SessionDetail() {
 
   const actualMin = session.endedAt ? (new Date(session.endedAt).getTime() - new Date(session.startedAt).getTime()) / 60000 : (Date.now() - new Date(session.startedAt).getTime()) / 60000;
   const achievement = session.plannedDurationMin > 0 ? Math.round((actualMin / session.plannedDurationMin) * 100) : 0;
+  const rigSummary = rig ? buildRigSummary(data, rig) : null;
 
   function onFiles(files: FileList | null) {
     if (!files || files.length === 0 || !session) return;
@@ -291,23 +291,29 @@ export default function SessionDetail() {
         <div className="space-y-5">
           <Card>
             <CardHeader>
-              <CardTitle>Device</CardTitle>
+              <CardTitle>Session</CardTitle>
             </CardHeader>
-            <CardContent className="pt-0 space-y-3 text-sm">
-              <DeviceRow icon={Battery} label="Battery" value={`${session.batteryPct}%`} progress={session.batteryPct} tone={session.batteryPct < 30 ? "critical" : "default"} />
-              <DeviceRow icon={HardDrive} label="Storage" value={`${session.storagePct}%`} progress={session.storagePct} tone={session.storagePct > 85 ? "warning" : "default"} />
+            <CardContent className="pt-0 space-y-2.5 text-sm">
               <div className="flex items-center gap-2">
-                <Wifi className={`size-4 ${session.signal === "healthy" ? "text-success" : "text-warning"}`} />
-                <span className="flex-1">Signal</span>
-                <span className="capitalize">{session.signal}</span>
+                <span className="flex-1 text-muted">Status</span>
+                <StatusBadge status={session.status === "active" ? "active" : session.status} />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="flex-1 text-muted">Duration</span>
+                <span className="tabular-nums">{fmtDuration(actualMin)}</span>
               </div>
               {rig && (
                 <div className="flex items-center gap-2 pt-2 border-t border-border">
-                  <Cpu className="size-4 text-muted" />
-                  <span className="flex-1">Rig</span>
-                  <span>
+                  <Cpu className="size-4 text-muted shrink-0" />
+                  <span className="flex-1">
                     {rig.code} · {rig.model}
                   </span>
+                  {rigSummary && <RigDeployabilityBadge status={toDeployability(rigSummary.readiness)} className="shrink-0" />}
+                </div>
+              )}
+              {rigSummary && rigSummary.openIncidents.length > 0 && (
+                <div className="text-xs text-warning">
+                  {rigSummary.openIncidents.length} open issue{rigSummary.openIncidents.length === 1 ? "" : "s"} on this rig
                 </div>
               )}
             </CardContent>
@@ -339,31 +345,6 @@ export default function SessionDetail() {
         defaults={{ businessId: session.businessId, foId: session.foId, rigId: session.rigId, sessionId: session.id }}
       />
       <PostSessionCheckDialog open={postCheckOpen} onOpenChange={setPostCheckOpen} session={session} />
-    </div>
-  );
-}
-
-function DeviceRow({
-  icon: Icon,
-  label,
-  value,
-  progress,
-  tone,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  value: string;
-  progress: number;
-  tone: "default" | "critical" | "warning";
-}) {
-  return (
-    <div>
-      <div className="flex items-center gap-2">
-        <Icon className={`size-4 ${tone === "critical" ? "text-critical" : tone === "warning" ? "text-warning" : "text-muted"}`} />
-        <span className="flex-1">{label}</span>
-        <span className="tabular-nums">{value}</span>
-      </div>
-      <Progress value={progress} className="h-1.5 mt-1.5" indicatorClassName={tone === "critical" ? "bg-critical" : tone === "warning" ? "bg-warning" : undefined} />
     </div>
   );
 }

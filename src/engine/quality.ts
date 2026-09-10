@@ -44,9 +44,10 @@ export function autoQualityReview(session: Session): AutoReviewResult {
     }
   }
 
-  if (session.signal === "intermittent") {
-    flags.push({ code: "signal", label: "Unusual telemetry", detail: "Signal was intermittent during the session." });
-  }
+  // (No signal-based flag here: Session.signal is never populated from a
+  // real device connection in this system — see the operational-model
+  // correction — so it can't back a Manager-facing quality finding without
+  // presenting fabricated data as fact.)
 
   const hasSevere = flags.some((f) => f.code === "low_duration" || f.code === "missing_end" || f.code === "missing_evidence");
   const verdict: QualityVerdict = hasSevere ? "fail" : flags.length > 0 ? "warn" : "pass";

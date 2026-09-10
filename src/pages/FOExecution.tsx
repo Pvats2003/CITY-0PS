@@ -9,9 +9,6 @@ import {
   UserRound,
   CheckCircle2,
   Circle,
-  Battery,
-  HardDrive,
-  Wifi,
   AlertTriangle,
   PlayCircle,
   StopCircle,
@@ -22,6 +19,8 @@ import {
   Camera,
   Lock,
   ClipboardCheck,
+  Store,
+  Cpu,
 } from "lucide-react";
 import { useCity } from "@/store/city";
 import { todayISO, fmtTime, fmtDate, fmtHours } from "@/lib/dates";
@@ -956,6 +955,8 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
     const h = String(Math.floor(elapsedSec / 3600)).padStart(2, "0");
     const m = String(Math.floor((elapsedSec % 3600) / 60)).padStart(2, "0");
     const s = String(elapsedSec % 60).padStart(2, "0");
+    const plannedSec = session.plannedDurationMin * 60;
+    const progressPct = plannedSec > 0 ? Math.min(100, Math.round((elapsedSec / plannedSec) * 100)) : 0;
     return (
       <div className="p-4 space-y-5">
         <div className="rounded-xl border border-border bg-surface-2/50 p-5 text-center">
@@ -963,15 +964,21 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
           <div className="text-4xl font-bold tabular-nums">
             {h}:{m}:{s}
           </div>
+          <div className="text-xs text-muted mt-1">
+            {progressPct}% of planned {session.plannedDurationMin}m
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <MiniStat icon={Battery} label="Battery" value={`${session.batteryPct}%`} tone={session.batteryPct < 30 ? "critical" : "default"} />
-          <MiniStat icon={HardDrive} label="Storage" value={`${session.storagePct}%`} tone={session.storagePct > 85 ? "warning" : "default"} />
+          <MiniStat icon={Store} label="Business" value={business?.name ?? "—"} tone="default" />
+          <MiniStat icon={Cpu} label="Rig" value={rig?.code ?? "No rig"} tone="default" />
         </div>
-        <div className="flex items-center gap-2 rounded-lg border border-border px-3 py-2.5">
-          <Wifi className={cn("size-4", session.signal === "healthy" ? "text-success" : "text-warning")} />
-          <span className="text-sm">Status: {session.signal === "healthy" ? "Healthy" : "Signal intermittent"}</span>
-        </div>
+        {rigSummary && rigSummary.openIncidents.length > 0 && (
+          <div className="flex items-center gap-2 rounded-lg border border-warning/25 bg-warning-bg px-3 py-2.5 text-sm text-warning">
+            <AlertTriangle className="size-4 shrink-0" />
+            {rigSummary.openIncidents.length} open rig issue{rigSummary.openIncidents.length === 1 ? "" : "s"} on {rig?.code}
+          </div>
+        )}
+        <EvidenceProgress assignment={assignment} />
         <Button variant="secondary" className="w-full h-12" onClick={() => setIssueOpen(true)}>
           <AlertTriangle className="size-4" /> Report Issue
         </Button>
