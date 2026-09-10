@@ -137,6 +137,23 @@ export function describeError(err: unknown): string {
   return err instanceof Error ? err.message : "Sync failed.";
 }
 
+// A single store mutation can trigger more than one `drainOutbox()` call
+// (e.g. addBusiness() both pushes a business AND logs an activity event as
+// two separate, synchronous Zustand updates — see syncEngine.ts's local
+// watcher — each schedules its own post-enqueue drain). Without a guard,
+// two overlapping drains can both read the same not-yet-deleted outbox
+// entry before either finishes its own `del()`, and both call
+// `backend.putDoc()` for it — a real duplicate Firestore write, proven via
+// a production-build reproduction. `putDoc` is idempotent
+// (`setDoc(..., {merge:true})`) so this was never a correctness/data-loss
+// bug, but it doubles (or, with more overlapping triggers, multiplies)
+// Firestore write cost for no reason. Serializing drains — any call that
+// arrives while one is already in flight just requests one more full pass
+// once the current one finishes, rather than racing it — removes the
+// window entirely without changing retry/ordering semantics.
+let draining = false;
+let drainQueued = false;
+
 /** Pushes every queued entry to the backend, in the order they were first
  * queued. Stops at the first failure rather than reordering or skipping —
  * the next `online` event or manual retry picks up where it left off.
@@ -144,21 +161,34 @@ export function describeError(err: unknown): string {
  * a failure caused by losing connectivity mid-drain is not — that's just
  * "offline," and is cleared silently on the next successful drain. */
 export async function drainOutbox(backend: RemoteBackend): Promise<void> {
-  if (!navigator.onLine) return;
-  const allKeys = (await keys()).filter((k): k is string => typeof k === "string" && k.startsWith("outbox:"));
-  for (const key of allKeys) {
-    const entry = (await get(key)) as OutboxEntry | undefined;
-    if (!entry) continue;
-    try {
-      if (entry.data === null) await backend.deleteDoc(entry.collection, entry.id);
-      else await backend.putDoc(entry.collection, entry.id, entry.data);
-      await del(key);
-      clearSyncError(entry.collection);
-    } catch (err) {
-      if (!navigator.onLine) break; // lost connectivity mid-drain — not an error
-      const code = (err as { code?: string } | undefined)?.code ?? "unknown";
-      reportSyncError(entry.collection, describeError(err), code);
-      break;
+  if (draining) {
+    drainQueued = true;
+    return;
+  }
+  draining = true;
+  try {
+    if (!navigator.onLine) return;
+    const allKeys = (await keys()).filter((k): k is string => typeof k === "string" && k.startsWith("outbox:"));
+    for (const key of allKeys) {
+      const entry = (await get(key)) as OutboxEntry | undefined;
+      if (!entry) continue;
+      try {
+        if (entry.data === null) await backend.deleteDoc(entry.collection, entry.id);
+        else await backend.putDoc(entry.collection, entry.id, entry.data);
+        await del(key);
+        clearSyncError(entry.collection);
+      } catch (err) {
+        if (!navigator.onLine) break; // lost connectivity mid-drain — not an error
+        const code = (err as { code?: string } | undefined)?.code ?? "unknown";
+        reportSyncError(entry.collection, describeError(err), code);
+        break;
+      }
+    }
+  } finally {
+    draining = false;
+    if (drainQueued) {
+      drainQueued = false;
+      void drainOutbox(backend);
     }
   }
 }

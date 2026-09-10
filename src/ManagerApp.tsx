@@ -1,6 +1,7 @@
 import { Suspense, lazy } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { useCity } from "@/store/city";
+import { useCollectionSyncStatus } from "@/data/useCollectionSyncStatus";
 import { AppShell } from "@/components/layout/AppShell";
 import Onboarding from "@/pages/Onboarding";
 import CommandCenter from "@/pages/CommandCenter";
@@ -30,9 +31,37 @@ const Analytics = lazy(() => import("@/pages/Analytics"));
  * before multi-user support — no link in the app needed to change. */
 export default function ManagerApp() {
   const onboarded = useCity((s) => s.settings.onboarded);
+  const hasBusinesses = useCity((s) => s.businesses.length > 0);
+  const hasRigs = useCity((s) => s.rigs.length > 0);
+  const hasFos = useCity((s) => s.fos.length > 0);
+  // `settings` (including `onboarded`) is device-local only — it's
+  // deliberately excluded from Firestore sync (see data/backend.ts's
+  // CollectionName), since it's a single per-device preference object, not
+  // a shared operational collection. That means a returning Manager on a
+  // new device or browser (or after this one's local storage was cleared)
+  // always starts with onboarded=false, even when their real city already
+  // exists in Firestore. Falling through to Onboarding in that case would
+  // hide fully-synced, real operational data behind a "Start My City"
+  // prompt — exactly the "my data is gone" symptom, even though nothing
+  // was ever lost. See below: we treat already-synced data as proof this
+  // city was onboarded, wherever that first happened.
+  const businessesSync = useCollectionSyncStatus("businesses");
 
   if (!onboarded) {
-    return <Onboarding />;
+    // A real backend's first snapshot hasn't landed yet — wait rather than
+    // flash "Start My City" at a Manager whose real data is still in
+    // flight. A genuine sync error stops the wait immediately (the app's
+    // existing sync-error surfaces — the Sidebar status pill — take over
+    // instead of hanging here forever).
+    if (businessesSync.status === "loading" && !businessesSync.error) {
+      return null;
+    }
+    if (!hasBusinesses && !hasRigs && !hasFos) {
+      return <Onboarding />;
+    }
+    // Real data already exists remotely (this device just never ran
+    // onboarding) — fall through to the real app below instead of hiding
+    // it.
   }
 
   return (
