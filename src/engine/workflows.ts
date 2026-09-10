@@ -236,18 +236,31 @@ function captureEvidence(params: {
   // (see syncEngine.ts) until every file here finishes uploading — an FO
   // can never legally update evidence after creating it (append-only), so
   // the record must reach Firestore already in its final state.
+  //
+  // takePendingFile() is IndexedDB-backed (durable across a reload/tab
+  // reclaim between capture and this call — see pendingFileBlobs.ts) and
+  // therefore async; captureEvidence() itself stays synchronous (every
+  // existing caller — captureLocationEvidence, captureStepEvidence,
+  // submitPrecheck — is a fire-and-forget UI action, not a value other
+  // code depends on synchronously) by chaining rather than awaiting here.
+  // `if (!raw) return` should now be unreachable in normal use — the UI
+  // layer no longer lets the same fileId be submitted twice (see
+  // FOExecution.tsx's in-flight guards) — but is kept as a defensive
+  // no-op rather than an assumption, since there is genuinely nothing left
+  // to retry if a file was somehow never stashed.
   for (const file of evidence.files) {
-    const raw = takePendingFile(file.id);
-    if (!raw) continue;
-    void enqueueMediaUpload({
-      foId: params.assignment.foId,
-      assignmentId: params.assignment.id,
-      evidenceId: evidence.id,
-      fileId: file.id,
-      fileName: file.name,
-      mimeType: file.type,
-      blob: raw,
-    }).then(() => drainMediaOutbox());
+    void takePendingFile(file.id).then((raw) => {
+      if (!raw) return;
+      return enqueueMediaUpload({
+        foId: params.assignment.foId,
+        assignmentId: params.assignment.id,
+        evidenceId: evidence.id,
+        fileId: file.id,
+        fileName: file.name,
+        mimeType: file.type,
+        blob: raw,
+      }).then(() => drainMediaOutbox());
+    });
   }
 
   return evidence;

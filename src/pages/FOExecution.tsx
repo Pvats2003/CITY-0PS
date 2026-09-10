@@ -36,7 +36,7 @@ import {
 } from "@/engine/workflows";
 import { buildRigSummary, isDeployable, proposeRigReplacement } from "@/engine/rigGuardian";
 import { toDeployability } from "@/engine/rigTaxonomy";
-import { deriveExecutionStage, evidenceCompleteness, PRECHECK_ITEMS, INSTALLATION_ITEMS } from "@/engine/execution";
+import { deriveExecutionStage, evidenceCompleteness, latestOfType, PRECHECK_ITEMS, INSTALLATION_ITEMS } from "@/engine/execution";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
@@ -49,6 +49,7 @@ import { businessMapsUrl } from "@/lib/googleMaps";
 import { IssueFormDialog } from "@/components/forms/IssueFormDialog";
 import { RigIncidentFormDialog } from "@/components/forms/RigIncidentFormDialog";
 import { PostSessionCheckDialog } from "@/components/forms/PostSessionCheckDialog";
+import { EvidenceThumb } from "@/components/forms/EvidenceReviewDialog";
 import { useAuth } from "@/auth/AuthContext";
 import { useSyncStatus } from "@/data/useSyncStatus";
 import { useCollectionSyncStatus } from "@/data/useCollectionSyncStatus";
@@ -490,12 +491,18 @@ function TodayList({ assignments, onSelect }: { assignments: Assignment[]; onSel
 
 function PhotoCapture({ label, files, onChange }: { label: string; files: EvidenceFile[]; onChange: (files: EvidenceFile[]) => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
-  function handleFiles(fl: FileList | null) {
+  async function handleFiles(fl: FileList | null) {
     if (!fl || fl.length === 0) return;
-    const items: EvidenceFile[] = Array.from(fl).map((f) => {
+    const items: EvidenceFile[] = [];
+    // Awaited so the picked photo is durably in IndexedDB (see
+    // pendingFileBlobs.ts) before onChange makes it possible to tap
+    // Submit — closes the gap where a backgrounded tab (the device's
+    // camera app taking focus, most commonly) could otherwise reclaim an
+    // in-memory-only handoff before the evidence step is ever submitted.
+    for (const f of Array.from(fl)) {
       const id = genId("file");
-      stashPendingFile(id, f);
-      return {
+      await stashPendingFile(id, f);
+      items.push({
         id,
         name: f.name,
         type: f.type || "image/jpeg",
@@ -503,8 +510,8 @@ function PhotoCapture({ label, files, onChange }: { label: string; files: Eviden
         localUrl: URL.createObjectURL(f),
         capturedAt: new Date().toISOString(),
         uploadStatus: "local_only",
-      };
-    });
+      });
+    }
     onChange([...files, ...items]);
   }
   const allUploaded = files.length > 0 && files.every((f) => f.uploadStatus == null || f.uploadStatus === "uploaded");
@@ -578,6 +585,19 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
   const [installChecklist, setInstallChecklist] = useState<Record<string, boolean>>({});
   const [verifyChecklist, setVerifyChecklist] = useState<Record<string, boolean>>({});
   const [completionPhotos, setCompletionPhotos] = useState<EvidenceFile[]>([]);
+  // Synchronous in-flight guards against a rapid double-tap submitting the
+  // same step twice (same class of fix as the assignment-duplication
+  // round): each of these evidence-creation calls mints a fresh, random
+  // evidence id every invocation, and a second submission's photos would
+  // find their durably-stashed blob already consumed by the first —
+  // there's nothing left to retry once that happens. Refs (checked
+  // synchronously, before React's next render) are the actual guard;
+  // conditionally hiding the submit UI once the corresponding evidence
+  // record exists in the live store (see the precheck/installation/
+  // completion branches below) is the second, independent layer.
+  const submittingPrecheckRef = useRef(false);
+  const submittingInstallationRef = useRef(false);
+  const submittingCompletionRef = useRef(false);
 
   function handleArrive() {
     setLocBusy(true);
@@ -672,21 +692,44 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
   }
 
   if (assignment.status === "completed" && stage === "completion") {
+    // Reads the LIVE store record, not the local `completionPhotos` state
+    // that was only ever a snapshot from the moment of capture — once
+    // submitted, this is what actually reflects a real upload finishing
+    // in the background (Bug A). Its mere presence also removes the
+    // picker/button below, so a second submission is structurally
+    // impossible once the first has landed in the store (Bug B).
+    const sessionEndEvidence = latestOfType(assignmentEvidence, assignment.id, "SESSION_END");
     return (
       <div className="p-4 space-y-4">
         <Section title="COMPLETION EVIDENCE">
-          <div className="text-sm text-muted mb-2">Add the remaining evidence before this visit is ready for review.</div>
-          <PhotoCapture label="Completion photo" files={completionPhotos} onChange={setCompletionPhotos} />
+          {sessionEndEvidence ? (
+            <div className="flex flex-wrap gap-2">
+              {sessionEndEvidence.files.map((f) => (
+                <EvidenceThumb key={f.id} file={f} />
+              ))}
+            </div>
+          ) : (
+            <>
+              <div className="text-sm text-muted mb-2">Add the remaining evidence before this visit is ready for review.</div>
+              <PhotoCapture label="Completion photo" files={completionPhotos} onChange={setCompletionPhotos} />
+            </>
+          )}
         </Section>
         <EvidenceProgress assignment={assignment} />
-        <Button
-          size="lg"
-          className="w-full h-14 text-base"
-          disabled={completionPhotos.length === 0}
-          onClick={() => captureStepEvidence(assignment, "SESSION_END", completionPhotos)}
-        >
-          <CheckCircle2 className="size-5" /> Submit Evidence
-        </Button>
+        {!sessionEndEvidence && (
+          <Button
+            size="lg"
+            className="w-full h-14 text-base"
+            disabled={completionPhotos.length === 0}
+            onClick={() => {
+              if (submittingCompletionRef.current) return;
+              submittingCompletionRef.current = true;
+              captureStepEvidence(assignment, "SESSION_END", completionPhotos);
+            }}
+          >
+            <CheckCircle2 className="size-5" /> Submit Evidence
+          </Button>
+        )}
       </div>
     );
   }
@@ -842,7 +885,12 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
         <Button
           size="lg"
           className="w-full h-14 text-base"
-          onClick={() => submitPrecheck(assignment, precheckChecklist, precheckPhotos, allCriticalDone ? undefined : "Precheck failed — see checklist.")}
+          disabled={precheckPhotos.length === 0}
+          onClick={() => {
+            if (submittingPrecheckRef.current) return;
+            submittingPrecheckRef.current = true;
+            submitPrecheck(assignment, precheckChecklist, precheckPhotos, allCriticalDone ? undefined : "Precheck failed — see checklist.");
+          }}
         >
           <ClipboardCheck className="size-5" /> Submit Precheck
         </Button>
@@ -899,6 +947,8 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
           className="w-full h-14 text-base"
           disabled={!allCriticalDone || !photosDone}
           onClick={() => {
+            if (submittingInstallationRef.current) return;
+            submittingInstallationRef.current = true;
             captureStepEvidence(assignment, "INSTALLATION", installPhotos);
             captureStepEvidence(assignment, "CABLE_SETUP", cablePhotos);
             captureStepEvidence(assignment, "FINAL_SETUP", finalPhotos);

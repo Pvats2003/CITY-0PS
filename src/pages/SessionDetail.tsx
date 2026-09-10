@@ -31,6 +31,7 @@ import { id as genId } from "@/lib/id";
 import { downloadJSON } from "@/lib/csv";
 import { stashPendingFile, takePendingFile } from "@/lib/pendingFileBlobs";
 import { enqueueMediaUpload, drainMediaOutbox } from "@/data/mediaOutbox";
+import type { EvidenceFile } from "@/types";
 
 export default function SessionDetail() {
   const { id } = useParams();
@@ -57,12 +58,13 @@ export default function SessionDetail() {
   const achievement = session.plannedDurationMin > 0 ? Math.round((actualMin / session.plannedDurationMin) * 100) : 0;
   const rigSummary = rig ? buildRigSummary(data, rig) : null;
 
-  function onFiles(files: FileList | null) {
+  async function onFiles(files: FileList | null) {
     if (!files || files.length === 0 || !session) return;
-    const items = Array.from(files).map((f) => {
+    const items: EvidenceFile[] = [];
+    for (const f of Array.from(files)) {
       const id = genId("file");
-      stashPendingFile(id, f);
-      return {
+      await stashPendingFile(id, f);
+      items.push({
         id,
         name: f.name,
         type: f.type || "application/octet-stream",
@@ -70,8 +72,8 @@ export default function SessionDetail() {
         localUrl: URL.createObjectURL(f),
         capturedAt: new Date().toISOString(),
         uploadStatus: "local_only" as const,
-      };
-    });
+      });
+    }
     let evidenceId: string;
     if (evidence) {
       updateEvidence(evidence.id, { files: [...evidence.files, ...items] });
@@ -92,7 +94,7 @@ export default function SessionDetail() {
       }).id;
     }
     for (const item of items) {
-      const raw = takePendingFile(item.id);
+      const raw = await takePendingFile(item.id);
       if (!raw) continue;
       void enqueueMediaUpload({
         foId: session.foId,

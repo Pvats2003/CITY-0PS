@@ -89,7 +89,7 @@ export const EXECUTION_STAGE_LABELS: Record<ExecutionStage, string> = {
   recheck_required: "Recheck required",
 };
 
-function latestOfType(evidence: Evidence[], assignmentId: string, type: EvidenceType): Evidence | undefined {
+export function latestOfType(evidence: Evidence[], assignmentId: string, type: EvidenceType): Evidence | undefined {
   return evidence
     .filter((e) => e.assignmentId === assignmentId && e.type === type)
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];

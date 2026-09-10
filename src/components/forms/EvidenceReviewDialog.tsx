@@ -20,7 +20,7 @@ import type { Evidence, EvidenceFile } from "@/types";
  * placeholder instead, since that's exactly the known cross-device gap
  * this phase closes for uploaded photos and documents for ones still in
  * flight. */
-function EvidenceThumb({ file }: { file: EvidenceFile }) {
+export function EvidenceThumb({ file }: { file: EvidenceFile }) {
   const [broken, setBroken] = useState(false);
   const src = file.downloadUrl ?? file.localUrl;
   const status = file.uploadStatus;
