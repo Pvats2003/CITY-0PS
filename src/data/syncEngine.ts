@@ -5,7 +5,7 @@ import type { UserRole } from "@/auth/types";
 import { COLLECTION_NAMES, type CollectionName, type RemoteBackend } from "./backend";
 import { localBackend } from "./localBackend";
 import { enqueue, drainOutbox, clearSyncError, getCollectionSyncError } from "./outbox";
-import { drainMediaOutbox } from "./mediaOutbox";
+import { drainMediaOutbox, onMediaOutboxChange } from "./mediaOutbox";
 import type { CityStore } from "@/store/city";
 import type { Evidence } from "@/types";
 
@@ -34,8 +34,95 @@ function collectionsForRole(role: UserRole | null): CollectionName[] {
  * evidence record is safe to sync to Firestore yet — see the comment on
  * `syncedEvidenceOnceIds` below for why the FO side can only ever do this
  * once, in the record's final state. */
-function evidenceReadyToSync(record: Evidence): boolean {
+export function evidenceReadyToSync(record: Evidence): boolean {
   return record.files.every((f) => f.uploadStatus == null || f.uploadStatus === "uploaded");
+}
+
+// Durable (localStorage-backed, separate key — same "own key, never touches
+// the main store's DATA_VERSION/migrate logic" pattern as city-ops-auth)
+// record of every evidence id that has already been enqueued to Firestore
+// at least once. `evidence/{docId}` in firestore.rules grants the Field
+// Officer CREATE only, never UPDATE — so a second enqueue for an id already
+// durably written would be a permission-denied write, not a harmless retry.
+// This MUST survive reloads: reconciliation (below) re-scans the FULL local
+// evidence array on every startup, so an in-memory-only Set would forget
+// every historical record on each reload and re-enqueue (and get denied on)
+// all of them, every single time the app loads.
+const SYNCED_EVIDENCE_STORAGE_KEY = "city-ops-synced-evidence-ids";
+
+function loadPersistedSyncedEvidenceIds(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(SYNCED_EVIDENCE_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? new Set(parsed.filter((v): v is string => typeof v === "string")) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function persistSyncedEvidenceIds(ids: Set<string>): void {
+  try {
+    window.localStorage.setItem(SYNCED_EVIDENCE_STORAGE_KEY, JSON.stringify([...ids]));
+  } catch {
+    // Storage unavailable/full — the in-memory Set below still prevents a
+    // duplicate enqueue for the rest of this session; worst case is a
+    // future reload re-scans this id, exactly as if it were new.
+  }
+}
+
+function markEvidenceSyncedOnce(id: string): void {
+  if (syncedEvidenceOnceIds.has(id)) return;
+  syncedEvidenceOnceIds.add(id);
+  persistSyncedEvidenceIds(syncedEvidenceOnceIds);
+}
+
+// In-memory-only guard against firing a SECOND enqueue() call for the same
+// evidence id while an earlier one is still in flight — the local watcher
+// and reconcileEvidenceSync() can both observe the same newly-ready record
+// in quick succession (e.g. two onMediaOutboxChange events back to back),
+// and without this, both could race to call enqueue() concurrently before
+// either had a chance to mark the id synced. idb-keyval's keyFor()-keyed
+// set() would make that harmless in practice (same key, last-value-wins),
+// but this avoids the wasted duplicate write outright. Never persisted —
+// "in flight right now" has no meaning across a reload.
+const pendingEvidenceEnqueues = new Set<string>();
+
+/** Enqueues ONE FO-authored evidence record's Firestore write, marking it
+ * durably synced ONLY once enqueue() has actually resolved — i.e. only
+ * once the outbox entry genuinely, durably exists in IndexedDB. This is
+ * deliberately NOT the same thing as "this evidence has reached
+ * Firestore": that retry loop (network failure, offline, a real
+ * permission-denied) lives entirely in drainOutbox()/outbox.ts and stays
+ * untouched by syncedEvidenceOnceIds once an entry is queued —
+ * drainOutbox() keeps retrying an already-queued entry regardless of this
+ * Set, on every subsequent drain, until it actually succeeds or hits a
+ * non-retriable client-side error. What this function (and the durable
+ * Set it maintains) exists to prevent is a SECOND, independent enqueue()
+ * call for an id whose outbox entry was already durably created — THAT's
+ * what would eventually produce an illegal second Firestore write attempt
+ * against evidence/{docId}'s create-only rule, once the first entry
+ * drains successfully.
+ *
+ * If enqueue() itself throws (a real, if rare, failure mode — e.g.
+ * IndexedDB unavailable or over quota), the id is deliberately left
+ * UNMARKED: marking it here before the outbox entry actually exists would
+ * permanently and silently drop this evidence from ever syncing — no
+ * outbox entry left to retry, and no future reconciliation pass would
+ * ever attempt it again, since it would already look "done." Leaving it
+ * unmarked means the next watcher transition or reconciliation pass
+ * retries the enqueue instead of losing the record. */
+async function enqueueEvidenceOnce(record: Evidence): Promise<void> {
+  if (syncedEvidenceOnceIds.has(record.id) || pendingEvidenceEnqueues.has(record.id)) return;
+  pendingEvidenceEnqueues.add(record.id);
+  try {
+    await enqueue({ collection: "evidence", id: record.id, data: record as unknown as Record<string, unknown> });
+    markEvidenceSyncedOnce(record.id);
+  } catch (err) {
+    console.error("[CITY-OPS] failed to durably enqueue evidence " + record.id + " to the outbox — will retry on the next sync pass", err);
+  } finally {
+    pendingEvidenceEnqueues.delete(record.id);
+  }
 }
 
 const SYNCED_CHANGE_EVENT = "city-ops-synced-collections-change";
@@ -90,6 +177,58 @@ const syncedEvidenceOnceIds = new Set<string>();
 // `started` flag back to false and leave the previous user's listeners
 // (and their in-flight errors) still attached underneath.
 let teardowns: Array<() => void> = [];
+// The backend/scope this run of the engine is currently wired to — set once
+// at the top of startSyncEngine() (right after `scope` is computed) and
+// cleared in resetSyncEngine(). reconcileEvidenceSync() (below) needs both
+// to enqueue+drain outside of the attachLocalWatcher() closure (it's called
+// from the media-outbox-change listener and from goOnline(), neither of
+// which has `backend`/`scope` in scope otherwise).
+let currentBackend: RemoteBackend | null = null;
+let currentScope: { foId: string } | undefined;
+
+/** Reconciliation pass — the fix for the architectural gap where Firestore
+ * evidence sync was purely edge-triggered: attachLocalWatcher() (below)
+ * only reacts to a LIVE Zustand transition it happens to observe. A media
+ * upload can flip a file's uploadStatus from "uploading"/undefined to
+ * "uploaded" (see mediaOutbox.ts's drainMediaOutbox()) at a moment when
+ * nothing is watching — most concretely, the watcher isn't even attached
+ * yet until persist hydration finishes, but the same gap exists across a
+ * reload, background/foreground cycle, or any missed subscribe() callback.
+ * When that happens, the evidence record silently never reaches Firestore,
+ * even though the underlying Storage upload succeeded — this is exactly
+ * the shape of the production ev_5l13axhb37 orphan (a real uploaded
+ * Supabase object with no matching Firestore document anywhere).
+ *
+ * This function does NOT depend on having observed any particular
+ * transition: it re-scans the FULL current local evidence array every time
+ * it's called, and finds anything that is ready to sync (evidenceReadyToSync)
+ * but not yet durably enqueued (syncedEvidenceOnceIds — persisted, see
+ * markEvidenceSyncedOnce() above). Called from three places below: once
+ * after the local watcher is attached (covers startup, in both the
+ * already-hydrated and hydrate-later cases), once on every media outbox
+ * drain via onMediaOutboxChange() (covers an upload finishing between
+ * watcher observations), and once on `online` (covers a reconnect after
+ * either kind of miss happened while offline).
+ *
+ * Idempotent: syncedEvidenceOnceIds is checked-then-marked before any
+ * enqueue, and is durable across reloads, so a record already enqueued by
+ * the local watcher OR by a previous reconciliation pass is never
+ * enqueued again — this is what prevents ever attempting a second
+ * (permission-denied) write against evidence/{docId}'s create-only rule. */
+function reconcileEvidenceSync(): void {
+  if (!currentBackend || !currentScope) return; // Manager sessions never call this at all — see call sites below
+  const backend = currentBackend;
+  const toEnqueue = (useCity.getState().evidence as unknown as Evidence[]).filter(
+    (record) => !syncedEvidenceOnceIds.has(record.id) && evidenceReadyToSync(record),
+  );
+  if (toEnqueue.length === 0) return;
+  // enqueueEvidenceOnce() marks each record synced ONLY after its own
+  // enqueue() has actually resolved (see its doc comment) — never marks
+  // eagerly here, so a record whose enqueue() genuinely fails stays
+  // eligible for the NEXT reconciliation pass instead of being silently
+  // and permanently dropped.
+  void Promise.all(toEnqueue.map((record) => enqueueEvidenceOnce(record))).then(() => drainOutbox(backend));
+}
 
 /** Wires the Zustand store to a shared backend: local mutations flow out
  * through the outbox, remote changes flow in via subscribeCollection. A
@@ -134,6 +273,17 @@ export async function startSyncEngine(): Promise<void> {
   // use it, to build the `where("foId", "==", ...)` their firestore.rules
   // grant requires for any list/listen to succeed at all.
   const scope = role === "FIELD_OFFICER" && foId ? { foId } : undefined;
+  currentBackend = backend;
+  currentScope = scope;
+  // Seed the in-memory tracking Set from the durable, persisted record of
+  // every evidence id this FO has ever enqueued — done on every
+  // startSyncEngine() call (not just once at module load) so it's correct
+  // both on a fresh page load AND after a resetSyncEngine()+re-sign-in
+  // cycle in the same tab, either of which would otherwise start this
+  // Set empty while Firestore already durably has these records.
+  if (scope) {
+    for (const id of loadPersistedSyncedEvidenceIds()) syncedEvidenceOnceIds.add(id);
+  }
 
   // Remote -> local: each collection's current document set replaces ours.
   for (const name of collectionsToSync) {
@@ -202,7 +352,11 @@ export async function startSyncEngine(): Promise<void> {
           if (name === "evidence" && scope) {
             if (syncedEvidenceOnceIds.has(record.id)) continue;
             if (!evidenceReadyToSync(record as unknown as Evidence)) continue;
-            syncedEvidenceOnceIds.add(record.id);
+            // enqueueEvidenceOnce() owns both the enqueue() call and the
+            // (post-success-only) durable mark — see its doc comment for
+            // why marking must never happen before enqueue() resolves.
+            queued.push(enqueueEvidenceOnce(record as unknown as Evidence));
+            continue;
           }
           queued.push(enqueue({ collection: name, id: record.id, data: record as unknown as Record<string, unknown> }));
         }
@@ -220,15 +374,46 @@ export async function startSyncEngine(): Promise<void> {
     teardowns.push(unsub);
   }
 
+  // Reconciliation runs once right after the local watcher is attached, in
+  // BOTH branches below — this is what covers "sync engine starts after
+  // persisted state has already hydrated" and "app boots with evidence
+  // already sitting in a ready-to-sync state from a previous session"
+  // (e.g. an upload that finished while the tab was closed). It is not a
+  // substitute for attachLocalWatcher(): the watcher still handles the
+  // common case (a live transition it actually observes) without waiting
+  // for the next reconciliation trigger.
   if (useCity.persist.hasHydrated()) {
     attachLocalWatcher();
+    reconcileEvidenceSync();
   } else {
-    useCity.persist.onFinishHydration(attachLocalWatcher);
+    useCity.persist.onFinishHydration(() => {
+      attachLocalWatcher();
+      reconcileEvidenceSync();
+    });
   }
+
+  // A media upload finishing is exactly the kind of transition the local
+  // watcher (a Zustand subscribe()) can miss the FIRST write of — e.g. the
+  // watcher observes evidence's array reference change when the record is
+  // first added (uploadStatus "uploading", not yet ready), then the file's
+  // uploadStatus flips to "uploaded" via mediaOutbox.ts's
+  // setFileUploadStatus() sometime later; if the watcher's subscribe
+  // callback isn't invoked again in between (or the tab was backgrounded),
+  // reconciliation is the only thing that ever notices the record became
+  // ready. Subscribing to the outbox's own change event (already exported,
+  // fired on both success and failure of each queued file) avoids a
+  // circular import with mediaOutbox.ts, which already imports nothing back
+  // from this module.
+  const unsubMediaOutbox = onMediaOutboxChange(() => reconcileEvidenceSync());
+  teardowns.push(unsubMediaOutbox);
 
   const goOnline = () => {
     void drainOutbox(backend);
     void drainMediaOutbox();
+    // Reconnecting is another point where a missed transition (one that
+    // happened while offline, when neither the outbox drain nor a Firestore
+    // write could have gone anywhere) needs a fresh look.
+    reconcileEvidenceSync();
   };
   window.addEventListener("online", goOnline);
   teardowns.push(() => window.removeEventListener("online", goOnline));
@@ -256,7 +441,14 @@ export function resetSyncEngine(): void {
   teardowns = [];
   started = false;
   applyingRemoteUpdate = false;
+  currentBackend = null;
+  currentScope = undefined;
   syncedCollections.clear();
+  // In-memory only — the durable localStorage record (SYNCED_EVIDENCE_STORAGE_KEY)
+  // is deliberately NOT cleared here: it belongs to the signed-out account's
+  // already-synced Firestore history, which is still true regardless of who
+  // signs in next in this tab. It's re-seeded fresh from storage at the top
+  // of the next startSyncEngine() call for whichever scope is active then.
   syncedEvidenceOnceIds.clear();
   // Every collection's error, not just one — this is a full identity
   // change, not "this one collection recovered," so the aggregate

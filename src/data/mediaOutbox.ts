@@ -150,8 +150,21 @@ export async function drainMediaOutbox(): Promise<void> {
           mimeType: entry.mimeType,
           blob: entry.blob,
         });
-        await del(key);
+        // Local "uploaded" status (with its real storagePath) is written
+        // FIRST, and only then is the outbox entry removed. If the process
+        // is interrupted between these two statements (reload, background,
+        // crash), the outbox entry is still present on the next drain: the
+        // upload is safely re-attempted (uploadEvidenceFile()'s target path
+        // is deterministic per evidenceId/fileId and Supabase upload uses
+        // upsert:true — see mediaStorage.ts — so a redundant re-upload just
+        // overwrites the same object, it never creates a duplicate). The
+        // reverse ordering (del() first) is exactly the bug that produced a
+        // real-world orphan: an uploaded Supabase object with no local
+        // record left to ever notify the Firestore sync watcher about it,
+        // because the one durable trace of that upload (the outbox entry)
+        // was already gone before the "uploaded" status was ever written.
         setFileUploadStatus(entry.evidenceId, entry.fileId, { uploadStatus: "uploaded", storagePath: uploaded.storagePath, downloadUrl: uploaded.downloadUrl });
+        await del(key);
         clearMediaSyncError(entry.evidenceId, entry.fileId);
         notifyChange();
       } catch (err) {

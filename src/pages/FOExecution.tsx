@@ -647,6 +647,7 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
   // conditionally hiding the submit UI once the corresponding evidence
   // record exists in the live store (see the precheck/installation/
   // completion branches below) is the second, independent layer.
+  const submittingArrivalRef = useRef(false);
   const submittingPrecheckRef = useRef(false);
   const submittingInstallationRef = useRef(false);
   const submittingCompletionRef = useRef(false);
@@ -857,7 +858,11 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
           size="lg"
           className="w-full h-14 text-base"
           disabled={arrivalPhotos.length === 0}
-          onClick={() => captureStepEvidence(assignment, "ARRIVAL", arrivalPhotos)}
+          onClick={() => {
+            if (submittingArrivalRef.current) return;
+            submittingArrivalRef.current = true;
+            captureStepEvidence(assignment, "ARRIVAL", arrivalPhotos);
+          }}
         >
           Continue to Rig Precheck
         </Button>
