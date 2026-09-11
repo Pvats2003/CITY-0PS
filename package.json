@@ -20,7 +20,8 @@
     "test:evidence-capture-fix": "node tests/evidence-capture-fix.regression.mjs",
     "test:media-sync-error": "node tests/media-sync-error.emulator.mjs",
     "test:supabase-media-storage": "node tests/supabase-media-storage.mjs",
-    "test:evidence-sync-reconciliation": "node tests/evidence-sync-reconciliation.emulator.mjs"
+    "test:evidence-sync-reconciliation": "node tests/evidence-sync-reconciliation.emulator.mjs",
+    "test:assignment-fo-update-permission": "node tests/assignment-fo-update-permission.emulator.mjs"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.11",

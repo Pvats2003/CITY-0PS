@@ -52,6 +52,39 @@ service cloud.firestore {
     }
     match /assignments/{docId} {
       allow read: if isFieldOfficer() && resource.data.foId == myFoId();
+      // Narrow update grant: the FO's own execution flow (arrival, en
+      // route, session start/end, installation start — see
+      // src/engine/workflows.ts's updateAssignment() calls) legitimately
+      // needs to write these specific fields on an assignment that is
+      // already theirs. Everything else on the document (foId, businessId,
+      // rigId, plannedStart/plannedEnd, priority, reviewStatus, and any
+      // other Manager-owned field) stays immutable from the FO side —
+      // ownership can't change hands and no field outside this exact list
+      // can be touched, even if the FO also happens to satisfy the foId
+      // checks. Never a general write grant.
+      //
+      // affectedKeys() alone is NOT enough: it's the union of added,
+      // changed, AND removed keys, so hasOnly([...]) on its own would also
+      // permit deleteField() on any one of these fields — the FO's own
+      // workflows never intend to delete any of them (every call site
+      // always assigns a real value), so removedKeys().size() == 0
+      // closes that off while still allowing a field to be set for the
+      // FIRST time (an added key, not a removed one — the common case,
+      // since these fields don't exist on the document until the FO's
+      // first corresponding action).
+      allow update: if isFieldOfficer()
+        && resource.data.foId == myFoId()
+        && request.resource.data.foId == myFoId()
+        && request.resource.data.diff(resource.data).removedKeys().size() == 0
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "enRouteAt",
+          "actualArrivalAt",
+          "actualStart",
+          "actualEnd",
+          "installationStartedAt",
+          "sessionId",
+          "status"
+        ]);
     }
     match /sessions/{docId} {
       allow read: if isFieldOfficer() && resource.data.foId == myFoId();
@@ -68,6 +101,23 @@ service cloud.firestore {
     match /rigIncidents/{docId} {
       allow read: if isFieldOfficer() && resource.data.foId == myFoId();
       allow create: if isFieldOfficer() && request.resource.data.foId == myFoId();
+      // Narrow update grant: reportRigIncident() immediately follows its
+      // own addRigIncident() with a linkedIssueId patch (see
+      // src/engine/workflows.ts) — the FO created this incident and is
+      // linking it to the companion Issue that same function created.
+      // Every other field on the incident (category, severity, status,
+      // description, foId, etc.) stays immutable from the FO side — the
+      // repair lifecycle is Manager-owned from here on.
+      //
+      // removedKeys().size() == 0: same reasoning as assignments above —
+      // affectedKeys().hasOnly(["linkedIssueId"]) alone would also permit
+      // deleteField() on linkedIssueId, which no legitimate FO workflow
+      // ever does (reportRigIncident() always sets it to a real id).
+      allow update: if isFieldOfficer()
+        && resource.data.foId == myFoId()
+        && request.resource.data.foId == myFoId()
+        && request.resource.data.diff(resource.data).removedKeys().size() == 0
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["linkedIssueId"]);
     }
     match /activity/{docId} {
       allow read: if isFieldOfficer();
