@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { isFirebaseConfigured } from "@/auth/config";
+import { isSupabaseConfigured } from "./supabaseClient";
 import { onMediaOutboxChange, mediaOutboxDepth, drainMediaOutbox } from "./mediaOutbox";
 import { onMediaSyncErrorChange, getLatestMediaSyncError, getMediaSyncErrorCount, type MediaSyncErrorDetail } from "./mediaSyncStatus";
 
@@ -27,7 +27,7 @@ export interface MediaSyncStatus {
   retry: () => void;
 }
 
-/** Media (Firebase Storage photo upload) sync status — deliberately
+/** Media (Supabase Storage photo upload) sync status — deliberately
  * separate from useSyncStatus.ts's Firestore-document-outbox status. A
  * Manager or FO reading "3 changes syncing" has no way to tell whether
  * that's photos or ordinary document writes; this hook is what lets a
@@ -37,7 +37,7 @@ export function useMediaSyncStatus(): MediaSyncStatus {
   const [pendingCount, setPendingCount] = useState(0);
   const [failedCount, setFailedCount] = useState(0);
   const [latestError, setLatestError] = useState<MediaSyncErrorDetail | null>(null);
-  const backendActive = isFirebaseConfigured() || !!window.__CITY_OPS_TEST_BACKEND__;
+  const backendActive = isSupabaseConfigured() || !!window.__CITY_OPS_TEST_BACKEND__;
 
   useEffect(() => {
     if (!backendActive) return;

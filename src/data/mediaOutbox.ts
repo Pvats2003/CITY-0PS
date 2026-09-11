@@ -1,6 +1,6 @@
 import { get, set, del, keys } from "idb-keyval";
 import { useCity } from "@/store/city";
-import { isFirebaseConfigured } from "@/auth/config";
+import { isSupabaseConfigured } from "./supabaseClient";
 import { uploadEvidenceFile } from "./mediaStorage";
 import { classifyStorageError, clearMediaSyncError, describeStorageErrorForFO, reportMediaSyncError } from "./mediaSyncStatus";
 
@@ -8,7 +8,7 @@ import { classifyStorageError, clearMediaSyncError, describeStorageErrorForFO, r
 // Evidence PHOTO BINARY outbox — extends the exact same idb-keyval-backed,
 // retry-on-reconnect outbox pattern as data/outbox.ts (same primitives, same
 // philosophy: never drop a queued item, never silently fabricate success),
-// applied to a different payload: a raw Blob destined for Firebase Storage
+// applied to a different payload: a raw Blob destined for Supabase Storage
 // rather than a JSON document destined for Firestore. Not a second,
 // unrelated queue architecture — this is that one, extended for binaries
 // (which idb-keyval already supports storing natively via IndexedDB's
@@ -52,11 +52,11 @@ export async function mediaOutboxDepth(): Promise<number> {
  * upload itself hasn't started yet. Marks the file "uploading" locally so
  * the FO sees a pending-upload state right away.
  *
- * A no-op in demo mode (no Firebase configured): there is no bucket to
+ * A no-op in demo mode (no Supabase configured): there is no bucket to
  * upload to, so the file stays "local_only" exactly as it always has —
  * no wasted IndexedDB writes, no doomed-to-fail retry loop. */
 export async function enqueueMediaUpload(entry: Omit<MediaOutboxEntry, "queuedAt">): Promise<void> {
-  if (!isFirebaseConfigured()) return;
+  if (!isSupabaseConfigured()) return;
   await set(keyFor(entry.evidenceId, entry.fileId), { ...entry, queuedAt: new Date().toISOString() } satisfies MediaOutboxEntry);
   setFileUploadStatus(entry.evidenceId, entry.fileId, { uploadStatus: "uploading" });
   notifyChange();
@@ -131,7 +131,7 @@ export async function drainMediaOutbox(): Promise<void> {
   }
   draining = true;
   try {
-    if (!isFirebaseConfigured() || !navigator.onLine) return;
+    if (!isSupabaseConfigured() || !navigator.onLine) return;
     const allKeys = (await keys()).filter((k): k is string => typeof k === "string" && k.startsWith(KEY_PREFIX));
     for (const key of allKeys) {
       const entry = (await get(key)) as MediaOutboxEntry | undefined;
@@ -139,7 +139,10 @@ export async function drainMediaOutbox(): Promise<void> {
       setFileUploadStatus(entry.evidenceId, entry.fileId, { uploadStatus: "uploading" });
       try {
         const uploaded = await uploadEvidenceFile({
-          foId: entry.foId,
+          // entry.foId is intentionally NOT passed — uploadEvidenceFile()
+          // derives the Storage path's ownership segment solely from the
+          // currently authenticated Firebase user (see mediaStorage.ts's
+          // currentUploaderUid()), never from a caller-supplied value.
           assignmentId: entry.assignmentId,
           evidenceId: entry.evidenceId,
           fileId: entry.fileId,

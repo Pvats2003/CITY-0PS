@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Media (Firebase Storage photo upload) sync-error state — deliberately
+// Media (Supabase Storage photo upload) sync-error state — deliberately
 // separate from src/data/outbox.ts's collectionSyncErrors. That map tracks
 // Firestore DOCUMENT sync failures (a different service, a different error
 // surface, `.code` values from a different SDK entirely). Conflating the
@@ -10,12 +10,14 @@
 // ---------------------------------------------------------------------------
 
 export interface MediaSyncErrorDetail {
-  /** Raw Firebase Storage error code (e.g. "storage/unauthorized") — or
-   * "network-error"/"unknown" for a failure the SDK didn't attribute a
-   * Storage-specific code to. Manager/debug visibility only — never render
-   * this directly in FO-facing UI; see describeStorageErrorForFO(). */
+  /** Raw Storage error code — "supabase/&lt;status&gt;" (e.g.
+   * "supabase/403") for the live Supabase Storage path, "storage/*" for the
+   * dormant Firebase Storage path, or "network-error"/"unknown" for a
+   * failure that carried no status code at all. Manager/debug visibility
+   * only — never render this directly in FO-facing UI; see
+   * describeStorageErrorForFO(). */
   code: string;
-  /** The raw Firebase error message — Manager/debug visibility only. */
+  /** The raw Storage error message — Manager/debug visibility only. */
   technicalMessage: string;
   /** FO-safe, human-readable translation of `code` — safe to render
    * directly anywhere. */
@@ -47,27 +49,37 @@ export function onMediaSyncErrorChange(cb: () => void): () => void {
   return () => window.removeEventListener(MEDIA_SYNC_CHANGE_EVENT, cb);
 }
 
-/** Firebase Storage's own documented error codes
- * (https://firebase.google.com/docs/storage/web/handle-errors), translated
- * into FO-safe language — never the raw Firebase message or a Storage
- * path. A network/CORS-level failure often carries no Storage-specific
- * `.code` at all (see classifyStorageError below); "network-error" covers
- * that case with its own message rather than falling into the generic
- * unknown bucket, since "check your connection" is more actionable than
- * "contact your Manager" when the real cause is connectivity. */
+/** Storage error codes translated into FO-safe language — never the raw
+ * technical message or a Storage path. Covers both vocabularies
+ * classifyStorageError() below can produce: Supabase Storage's HTTP-
+ * status-derived "supabase/NNN" codes (the live production path) and
+ * Firebase Storage's "storage/*" codes (kept for parity with the dormant
+ * Firebase Storage code and its existing test file — see this round's
+ * report). A network/CORS-level failure often carries no status code at
+ * all (see classifyStorageError below); "network-error" covers that case
+ * with its own message rather than falling into the generic unknown
+ * bucket, since "check your connection" is more actionable than "contact
+ * your Manager" when the real cause is connectivity. */
 export function describeStorageErrorForFO(code: string): string {
   switch (code) {
     case "storage/unauthorized":
     case "storage/unauthenticated":
+    case "supabase/401":
+    case "supabase/403":
       return "Photo upload isn't authorized. Contact your Manager.";
     case "storage/object-not-found":
+    case "supabase/404":
       return "Photo upload service couldn't find the storage location. Contact your Manager.";
     case "storage/bucket-not-found":
     case "storage/project-not-found":
     case "storage/no-default-bucket":
       return "Photo storage isn't available. Contact your Manager.";
+    case "supabase/409":
+      return "Photo upload conflicted with an existing file. Tap to retry.";
     case "storage/quota-exceeded":
       return "Photo storage is full. Contact your Manager.";
+    case "supabase/413":
+      return "This photo is too large to upload.";
     case "storage/canceled":
       return "Photo upload was interrupted. Tap to retry.";
     case "storage/retry-limit-exceeded":
@@ -79,17 +91,24 @@ export function describeStorageErrorForFO(code: string): string {
 }
 
 /** Extracts a Storage error's code + raw message from whatever
- * uploadBytesResumable()/getDownloadURL() rejected with. Firebase Storage
- * errors are FirebaseError instances with a `.code` for anything the
- * server itself rejected (auth, rules, missing bucket, ...); a bare
- * network/CORS failure the browser's fetch layer raised before ever
- * reaching Firebase often has no such code, so that case is classified by
- * message content instead of left as a bare "unknown". */
+ * uploadEvidenceFile()/getEvidenceSignedUrl() rejected with.
+ *
+ * Supabase Storage errors (`@supabase/storage-js`'s `StorageApiError`) carry
+ * a `.statusCode` (a string like "403") or `.status` (a number) rather than
+ * Firebase's `.code` string — classified here as `"supabase/<status>"` so
+ * describeStorageErrorForFO() can key on it directly. Firebase's `.code`
+ * shape is still checked first and left intact for parity with the dormant
+ * Firebase Storage code path and its existing test file. A bare network/
+ * CORS failure the browser's fetch layer raised before ever reaching either
+ * backend carries neither field, so that case is classified by message
+ * content instead of left as a bare "unknown". */
 export function classifyStorageError(err: unknown): { code: string; technicalMessage: string } {
-  const code = (err as { code?: string } | undefined)?.code;
+  const e = err as { code?: string; statusCode?: string | number; status?: number } | undefined;
   const message = err instanceof Error ? err.message : String(err);
-  if (code) return { code, technicalMessage: message };
-  if (/network|fetch|cors/i.test(message)) return { code: "network-error", technicalMessage: message };
+  if (e?.code) return { code: e.code, technicalMessage: message };
+  const statusCode = e?.statusCode != null ? String(e.statusCode) : e?.status != null ? String(e.status) : undefined;
+  if (statusCode) return { code: `supabase/${statusCode}`, technicalMessage: message };
+  if (/network|fetch|cors|failed to fetch/i.test(message)) return { code: "network-error", technicalMessage: message };
   return { code: "unknown", technicalMessage: message };
 }
 

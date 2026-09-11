@@ -342,13 +342,21 @@ export interface EvidenceFile {
   capturedAt: string;
   /** Undefined only on records created before this field existed. */
   uploadStatus?: MediaUploadStatus;
-  /** Deterministic Firebase Storage object path this file uploads to —
+  /** Deterministic Supabase Storage object path this file uploads to —
    * see data/mediaStorage.ts's evidenceStoragePath(). Stable per file id,
    * so a retried upload overwrites the same object rather than creating a
-   * duplicate. */
+   * duplicate. This is the durable reference — pass it to
+   * mediaStorage.ts's getEvidenceSignedUrl() to fetch a fresh, short-lived
+   * signed URL at display time (the bucket is private, so there is no
+   * permanent public URL). */
   storagePath?: string;
-  /** Persistent HTTPS download URL, set once uploadStatus is "uploaded" —
-   * the one reference that resolves from any device/session. */
+  /** A signed URL captured at upload time, set once uploadStatus is
+   * "uploaded" — convenient for immediate display right after upload, but
+   * NOT a durable reference: the bucket is private and this URL expires.
+   * Any viewer that might render this later (a reopened app, a different
+   * session) should call getEvidenceSignedUrl(storagePath) for a fresh one
+   * rather than trust this field indefinitely — see
+   * EvidenceReviewDialog.tsx's useEvidenceDisplaySrc(). */
   downloadUrl?: string;
   /** Set only while uploadStatus === "upload_failed" — the FO-safe, human-
    * readable reason (see data/mediaSyncStatus.ts's describeStorageErrorForFO()).

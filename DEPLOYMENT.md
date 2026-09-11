@@ -85,6 +85,11 @@ in demo mode. `.env` is gitignored — never commit real values. When
 deploying, set these as build-time environment variables in your hosting
 provider's dashboard, not in the repository.
 
+Separately, `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (see section
+6a) are required for evidence-photo upload/retry/review to work — without
+them, media upload silently no-ops the same way the app stays in demo mode
+without the six Firebase vars.
+
 ## 6. User provisioning
 
 Firebase Auth only proves *who* someone is. Their *role* (`MANAGER` or
@@ -100,10 +105,119 @@ For each person:
    - `foId`: (Field Officers only) the `id` of their `FieldOfficer` record,
      visible in the Manager app's Field Officers page
    - `displayName`: optional string
+4. **Run the Supabase role-claim script** (see section 6b) with `--uid
+   <that UID>` — required for this account's evidence-photo uploads to
+   work at all (see section 6a). Do this every time you add a person;
+   there is no automatic trigger for it.
 
 No admin UI for this exists in the app — deliberately, for a handful of
 accounts a one-time manual step per person is simpler than building and
 maintaining an admin screen.
+
+## 6a. Supabase Storage setup (evidence photos)
+
+Firebase Storage is **not used**. Binary evidence photos (JPEG/PNG captured
+by Field Officers) go to **Supabase Storage** instead — chosen specifically
+because it works entirely on Supabase's free tier with no credit card,
+avoiding an upgrade to Firebase's paid Blaze plan. Firebase Auth is still
+the only login system and Firestore is still the only operational
+database; Supabase is used for nothing except this one bucket of photo
+binaries. See `src/data/supabaseClient.ts` and `src/data/mediaStorage.ts`.
+
+1. **Create a Supabase project** at [supabase.com](https://supabase.com) —
+   free tier, no card required.
+2. **Enable Firebase as a Third-Party Auth provider**: in the Supabase
+   dashboard, go to **Authentication → Sign In / Providers → Third-Party
+   Auth**, add a **Firebase** integration, and enter Firebase project ID
+   **`city-ops-cf81f`**. This is what lets Supabase verify the SAME
+   Firebase ID token this app already uses everywhere else — no second
+   login, no Supabase-native session, no password stored anywhere in
+   Supabase.
+3. **Create the bucket**: Storage → New bucket → name it exactly `evidence`
+   → **make sure "Public bucket" is OFF**. It must stay private.
+4. **Apply the RLS policies** — SQL Editor → run:
+
+   ```sql
+   create policy "fo_insert_own_evidence" on storage.objects for insert to authenticated
+     with check (bucket_id = 'evidence' and (storage.foldername(name))[1] = (auth.jwt()->>'sub'));
+
+   create policy "fo_update_own_evidence" on storage.objects for update to authenticated
+     using (bucket_id = 'evidence' and (storage.foldername(name))[1] = (auth.jwt()->>'sub'));
+
+   create policy "fo_select_own_evidence" on storage.objects for select to authenticated
+     using (bucket_id = 'evidence' and (storage.foldername(name))[1] = (auth.jwt()->>'sub'));
+
+   create table public.managers (uid text primary key);
+
+   create policy "manager_select_any_evidence" on storage.objects for select to authenticated
+     using (bucket_id = 'evidence' and exists (select 1 from public.managers m where m.uid = auth.jwt()->>'sub'));
+   ```
+
+   No public-read policy, no anonymous-upload policy, and no delete policy
+   are created for anyone — deletes are impossible through the client SDK
+   by construction (Postgres RLS defaults to deny with no matching policy).
+5. **Populate `public.managers`**: for each Manager account, insert their
+   Firebase UID —
+   ```sql
+   insert into public.managers (uid) values ('<manager-firebase-uid>');
+   ```
+   Keep this in sync manually whenever a Manager account is added or
+   removed; there is no automatic sync from Firestore.
+6. **Get the project URL and anon key**: Project Settings → API. Set them
+   as `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (see `.env.example`)
+   — both required, same all-or-nothing pattern as the Firebase vars.
+   **Never** put a Supabase *service-role* key here — only the public anon
+   key belongs in a client-side env var.
+7. **Free-plan considerations**:
+   - **1 GB total file storage** — monitor over time; evidence photos
+     accumulate and there's no automatic cleanup. Plan a retention/export
+     policy or upgrade if you approach the limit.
+   - **10 GB egress/month** (5 GB cached + 5 GB uncached) — should be
+     ample for an internal ops app's Manager-review read volume.
+   - **50 MB max file size** — not a real constraint for phone JPEG/PNG
+     photos.
+   - **Free projects pause after 7 days with zero API requests.** Add a
+     scheduled GitHub Actions workflow (free, runs on GitHub's own
+     infrastructure — not an office laptop, no card needed) that pings the
+     project once a day to prevent this.
+   - No SLA on the free tier — acceptable for an internal operations tool.
+
+## 6b. Assigning the Supabase `role: "authenticated"` claim
+
+Supabase's Third-Party Auth requires every Firebase ID token to carry a
+`role: "authenticated"` custom claim, or Supabase treats the request as the
+anonymous Postgres role and every policy above denies it. Firebase JWTs
+don't carry this by default, and there is **no Cloud Function and no
+Blaze-plan requirement** in this design — instead, a one-time/per-account
+local admin script (`scripts/set-supabase-role-claim.mjs`) sets it directly
+via the Firebase Admin SDK.
+
+1. **Get a service-account key**: Firebase Console → Project Settings →
+   Service Accounts → **Generate new private key**. Save the downloaded
+   JSON file **outside this repository** — it must never be committed.
+2. **Bulk backfill** (run once, for every account that already exists):
+   ```
+   FIREBASE_SERVICE_ACCOUNT_PATH=/path/outside/repo/key.json \
+     node scripts/set-supabase-role-claim.mjs
+   ```
+3. **Per new account going forward** (part of the provisioning checklist
+   in section 6, step 4):
+   ```
+   FIREBASE_SERVICE_ACCOUNT_PATH=/path/outside/repo/key.json \
+     node scripts/set-supabase-role-claim.mjs --uid <new-user-uid>
+   ```
+4. The affected user's browser needs a fresh ID token before the claim
+   takes effect — signing out and back in gets one immediately; otherwise
+   the Firebase SDK's normal token refresh cycle picks it up on its own
+   within about an hour.
+5. **Revoke the service-account key** (Firebase Console → Service Accounts)
+   once you're done provisioning for now — nothing needs to hold Admin SDK
+   credentials between provisioning sessions.
+
+The script only ever adds `role: "authenticated"` — never `foId`, never
+`MANAGER`/`FIELD_OFFICER`. It merges into (never overwrites) any other
+custom claims already present, and is safe to re-run (idempotent). Full
+details and security notes are in the script's own header comment.
 
 ## 7. Demo vs. production
 
@@ -209,12 +323,23 @@ of demo or production mode and of any paid service.
 | New user can log in but sees "No field officer profile found" | Their `users/{uid}` doc is missing, has the wrong `role`, or its `foId` doesn't match an existing `FieldOfficer` record. |
 | `firebase` commands fail with "have you run firebase login?" | Expected until you authenticate: `firebase login`, then `firebase use --add` to select your project. |
 | Refreshing `/dashboard` or `/fo` 404s on your host | Your static host isn't rewriting all paths to `/index.html` (SPA fallback). Firebase Hosting's config in `firebase.json` already does this. |
+| Photo upload fails with "Photo upload isn't authorized. Contact your Manager." for every FO | Most likely: that account (or every account) never had `role: "authenticated"` set via `scripts/set-supabase-role-claim.mjs` (see section 6b) — without it, Supabase treats every request as anonymous and denies it. Also check the RLS policies in section 6a were actually applied. |
+| Photo upload fails for one specific FO only | Check that FO's `--uid` was included in the role-claim script run (section 6b), and that they've signed in again (or waited for their token to refresh) since it ran. |
+| Manager can't view a photo the FO already uploaded | Check the Manager's Firebase UID is present in `public.managers` (section 6a step 5) AND that their account also has the `role: "authenticated"` claim (section 6b) — both are required. |
+| Evidence photos worked, then stopped after a few days of no activity | The Supabase free project likely auto-paused from inactivity (section 6a step 7) — resume it from the Supabase dashboard, and set up the GitHub Actions keep-alive ping to prevent it recurring. |
 
 ## Known limitations
 
 - **The Firebase Auth/Firestore path is written, reviewed, and rules-
   syntax-checked, but not live-tested.** No Firebase account or project
   exists in this environment.
+- **The Supabase Storage path (evidence photos) is written and tested
+  against an in-memory mock that mirrors the RLS policies in section 6a
+  line for line, but not against a real Supabase project.** No Supabase
+  project exists in this environment either — see `tests/
+  supabase-media-storage.mjs`'s header for exactly what is and isn't
+  proven by that test, and this round's implementation report for what
+  must be manually verified once a real project exists.
 - **No live cross-device test has been run.** That requires the app to be
   actually deployed against a real project first.
 - No admin UI for provisioning users (see section 6) — worth building if

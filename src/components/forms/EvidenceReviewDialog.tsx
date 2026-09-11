@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, ImageOff, UploadCloud, CloudCheck, CloudAlert } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -9,9 +9,10 @@ import { evidenceCompleteness, runEvidenceQA } from "@/engine/execution";
 import { reviewEvidence, reviewAssignment } from "@/engine/workflows";
 import { ActivityTimeline } from "@/components/shared/ActivityTimeline";
 import { fmtDateTime, fmtHours } from "@/lib/dates";
+import { getEvidenceSignedUrl } from "@/data/mediaStorage";
 import type { Evidence, EvidenceFile } from "@/types";
 
-/** One evidence photo, preferring the durable Storage downloadUrl over the
+/** One evidence photo, preferring the durable Storage reference over the
  * transient local blob URL (spec: "every evidence viewer must prefer
  * downloadUrl over localUrl"). Falls back to localUrl only for the brief
  * pre-upload window on the SAME device that captured it — and even then,
@@ -20,6 +21,36 @@ import type { Evidence, EvidenceFile } from "@/types";
  * placeholder instead, since that's exactly the known cross-device gap
  * this phase closes for uploaded photos and documents for ones still in
  * flight. */
+/** The Supabase `evidence` bucket is private — there is no permanent public
+ * URL. `file.downloadUrl` only ever holds a signed URL captured at upload
+ * time (see mediaStorage.ts), which expires; trusting it indefinitely would
+ * mean a photo that displayed fine right after capture silently breaks the
+ * next time anyone opens this dialog. This hook fetches a FRESH signed URL
+ * for any file that has actually finished uploading, falling back to the
+ * (possibly already-expired) persisted `downloadUrl` while that fetch is in
+ * flight or if it fails, and to `localUrl` for anything not yet uploaded —
+ * so nothing about EvidenceFile's stored shape needs to change, only how a
+ * viewer resolves it to a src. */
+function useEvidenceDisplaySrc(file: EvidenceFile): string | undefined {
+  const [freshUrl, setFreshUrl] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    setFreshUrl(undefined);
+    if (file.uploadStatus !== "uploaded" || !file.storagePath) return;
+    let cancelled = false;
+    getEvidenceSignedUrl(file.storagePath)
+      .then((url) => {
+        if (!cancelled) setFreshUrl(url);
+      })
+      .catch(() => {
+        // Leave freshUrl unset — falls back to the persisted downloadUrl
+        // (or the onError placeholder below if that's also unusable).
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [file.uploadStatus, file.storagePath]);
+  return freshUrl ?? file.downloadUrl ?? file.localUrl;
+}
 /** The FO-safe status text for one file's upload state — never a raw
  * Firebase message. `file.uploadErrorReason` (set by mediaOutbox.ts's
  * setFileUploadStatus() from mediaSyncStatus.ts's
@@ -56,7 +87,7 @@ export function EvidenceThumb({
   showTechnicalDetail?: boolean;
 }) {
   const [broken, setBroken] = useState(false);
-  const src = file.downloadUrl ?? file.localUrl;
+  const src = useEvidenceDisplaySrc(file);
   const status = file.uploadStatus;
   const statusText = evidenceFileStatusText(file);
   const tooltip = showTechnicalDetail && status === "upload_failed" && file.uploadErrorCode ? `${statusText} (${file.uploadErrorCode})` : statusText;

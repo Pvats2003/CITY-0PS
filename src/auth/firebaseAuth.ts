@@ -151,6 +151,21 @@ async function loadAppUser(fbUser: User): Promise<AppUser | null> {
   return appUser;
 }
 
+/** The current Firebase user's ID token, for use as Supabase's Third-Party
+ * Auth `accessToken` (see data/supabaseClient.ts). Uses the SDK's normal,
+ * non-forced getIdToken() — Firebase's client SDK auto-refreshes the cached
+ * token as it nears expiry, so this does not force a network round-trip on
+ * every call. Pass `forceRefresh: true` only for the explicit, one-off case
+ * of picking up a custom claim that just changed (account provisioning/
+ * testing — see scripts/set-supabase-role-claim.mjs) — never as the default
+ * for ordinary requests. Returns null when signed out. */
+export async function getCurrentFirebaseIdToken(forceRefresh = false): Promise<string | null> {
+  const auth = getAuth(getFirebaseApp());
+  const user = auth.currentUser;
+  if (!user) return null;
+  return user.getIdToken(forceRefresh);
+}
+
 export const firebaseAuthProvider: AuthProvider = {
   onChange(cb) {
     const auth = getAuth(getFirebaseApp());
