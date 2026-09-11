@@ -46,7 +46,7 @@ function check(condition, message) {
 // ---------------------------------------------------------------------
 function evidenceStoragePath(uploaderUid, assignmentId, evidenceId, fileId, fileName) {
   const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-  return `evidence/${uploaderUid}/${assignmentId}/${evidenceId}/${fileId}-${safeName}`;
+  return `${uploaderUid}/${assignmentId}/${evidenceId}/${fileId}-${safeName}`;
 }
 
 // ---------------------------------------------------------------------
@@ -95,6 +95,20 @@ function describeStorageErrorForFO(code) {
 //   manager_select_any_evidence:
 //     bucket_id = 'evidence' and sub in (select uid from public.managers)
 //
+// IMPORTANT: `storage.foldername(name)` in real Postgres returns the
+// object's path segments EXCLUDING the filename, then `[1]` (Postgres
+// arrays are 1-indexed) is the FIRST of those — i.e. for a bucket-relative
+// name (what .from("evidence").upload(path, ...) actually stores as
+// `name` — the bucket itself is a separate column, never part of the
+// path), that's simply the path's first "/"-separated segment. In JS
+// terms that's `path.split("/")[0]`. An earlier version of this fake used
+// `path.split("/")[1]` (the SECOND segment), which only "worked" because
+// it silently matched a real production bug where evidenceStoragePath()
+// itself prepended a redundant "evidence/" segment — the fake and the bug
+// canceled out and both were wrong. Now that evidenceStoragePath() is
+// fixed to be bucket-relative, this fake must check index [0] to
+// correctly model real RLS semantics — see this round's incident report.
+//
 // No delete method is exposed at all — mirroring "no delete policy exists
 // for any role" (see [J] below, which checks this structurally rather than
 // via this fake).
@@ -113,7 +127,7 @@ class FakeSupabaseStorage {
         return {
           async upload(path, blob, opts) {
             if (bucketId !== "evidence") return { error: fakeError(404, "Bucket not found") };
-            const owner = path.split("/")[1]; // evidence/{uid}/...
+            const owner = path.split("/")[0]; // bucket-relative: {uid}/{assignmentId}/{evidenceId}/{fileId}-{fileName}
             if (owner !== sub) return { error: fakeError(403, "new row violates row-level security policy") };
             const exists = bucket.objects.has(path);
             if (exists && !opts?.upsert) return { error: fakeError(409, "The resource already exists") };
@@ -122,7 +136,7 @@ class FakeSupabaseStorage {
           },
           async createSignedUrl(path, expirySeconds) {
             if (bucketId !== "evidence") return { data: null, error: fakeError(404, "Bucket not found") };
-            const owner = path.split("/")[1];
+            const owner = path.split("/")[0];
             const isOwner = owner === sub;
             const isManager = bucket.managers.has(sub);
             if (!isOwner && !isManager) return { data: null, error: fakeError(403, "new row violates row-level security policy") };
@@ -187,6 +201,26 @@ async function main() {
   const managerCtx = { ctx: fake.as("manager-uid-1"), uid: "manager-uid-1" };
   const nonManagerCtx = { ctx: fake.as("fo-other-uid"), uid: "fo-other-uid" };
 
+  // ------------------------------------------------------------ [PATH]
+  console.log("\n[PATH] evidenceStoragePath() is bucket-relative (regression test for the AccessDenied incident):");
+  // The bug: evidenceStoragePath() used to prepend a redundant "evidence/"
+  // segment on top of .from("evidence") already scoping every call to that
+  // bucket, which shifted (storage.foldername(name))[1] off the uploader's
+  // uid onto the literal string "evidence" — denying every upload/read for
+  // every user, unconditionally. Fixed to be bucket-relative.
+  const pathCheck = evidenceStoragePath("uid_123", "asg_9", "ev_9", "file_9", "photo.jpg");
+  check(pathCheck === "uid_123/asg_9/ev_9/file_9-photo.jpg", `evidenceStoragePath() returns <UID>/<assignmentId>/<evidenceId>/<file> exactly (got: "${pathCheck}")`);
+  check(!pathCheck.startsWith("evidence/"), `evidenceStoragePath()'s output does NOT begin with "evidence/" (got: "${pathCheck}")`);
+  check(pathCheck.split("/")[0] === "uid_123", "the first path segment is the uploader's uid — exactly what (storage.foldername(name))[1] checks against auth.jwt()->>'sub'");
+  // Cross-check against the REAL source file, not just this mirror — guards
+  // against the mirror and the real implementation silently drifting apart.
+  const realMediaStorageSrc = readFileSync("src/data/mediaStorage.ts", "utf8");
+  check(
+    /return `\$\{uploaderUid\}\/\$\{assignmentId\}\/\$\{evidenceId\}\/\$\{fileId\}-\$\{safeName\}`;/.test(realMediaStorageSrc),
+    "src/data/mediaStorage.ts's real evidenceStoragePath() returns the bucket-relative template literal (no leading \"evidence/\")",
+  );
+  check(!/return `evidence\/\$\{uploaderUid\}/.test(realMediaStorageSrc), "src/data/mediaStorage.ts's real evidenceStoragePath() does NOT reintroduce the redundant \"evidence/\" prefix");
+
   // -------------------------------------------------------------- [A]
   console.log("\n[A] Successful upload:");
   const queueA = [];
@@ -196,7 +230,7 @@ async function main() {
   queueA.push(goodEntry);
   await drainMediaOutboxMirrored(queueA, () => ownerCtx, errorsA, resultsA);
   check(resultsA[0]?.outcome === "uploaded", "upload succeeds when the object path's uid segment matches the caller's own uid");
-  check(resultsA[0]?.storagePath === "evidence/fo-owner-uid/asg_1/ev_1/file_1-photo.jpg", "deterministic path matches evidenceStoragePath()'s exact shape");
+  check(resultsA[0]?.storagePath === "fo-owner-uid/asg_1/ev_1/file_1-photo.jpg", "deterministic path matches evidenceStoragePath()'s exact shape");
 
   // ------------------------------------------------------------ [B]/[C]
   console.log("\n[B] Failed upload remains in the outbox, [C] real error code/message is captured:");

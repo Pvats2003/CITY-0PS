@@ -35,7 +35,7 @@ const SIGNED_URL_TTL_SECONDS = 60 * 60;
  * getEvidenceSignedUrl(), which are the only callers that need a path. */
 export function evidenceStoragePath(uploaderUid: string, assignmentId: string, evidenceId: string, fileId: string, fileName: string): string {
   const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-  return `evidence/${uploaderUid}/${assignmentId}/${evidenceId}/${fileId}-${safeName}`;
+  return `${uploaderUid}/${assignmentId}/${evidenceId}/${fileId}-${safeName}`;
 }
 
 /** Resolves the CURRENTLY authenticated Firebase user's uid — this is the
