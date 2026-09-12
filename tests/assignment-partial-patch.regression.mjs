@@ -164,6 +164,11 @@ const today = now.slice(0, 10);
 const FO_ID = "fo1";
 const ASG_ID = "asg_partial_patch_test";
 
+/** A minimal 1x1 PNG, used as the "Rig photo" the FO attaches to enable the
+ * Submit Precheck button — real bytes, not a stub. */
+const ONE_PX_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
 // src/data/syncEngine.ts's waitForAuthReady() checks
 // window.__CITY_OPS_TEST_AUTH_PROVIDER__ FIRST, before ever falling back to
 // isFirebaseConfigured() — it does NOT read city-ops-auth localStorage
@@ -266,6 +271,88 @@ async function seedCityData(page, assignment) {
       localStorage.setItem("__mock_firestore_store__", JSON.stringify(mockStore));
     },
     { assignment, foId: FO_ID },
+  );
+}
+
+/** Same shape as seedCityData(), but the assignment is already "arrived"
+ * with a LOCATION evidence record present and no RIG_PRECHECK evidence yet
+ * — deriveExecutionStage() (src/engine/execution.ts) lands this exactly on
+ * FOExecution.tsx's precheck checklist/"Submit Precheck" screen without
+ * this test needing to drive the geolocation-gated arrival UI first. The
+ * LOCATION evidence record is seeded into BOTH city-ops-os AND the mock
+ * "remote" store — evidence is one of FIELD_OFFICER_COLLECTIONS (subscribed
+ * for an FO session), and mergeRemoteCollection() is a full replace, so an
+ * empty mock evidence collection would otherwise wipe this locally-seeded
+ * record the instant the sync engine's first snapshot arrives, before the
+ * precheck screen ever renders. */
+async function seedCityDataAtPrecheckStage(page, assignmentOverrides = {}) {
+  await page.evaluate(
+    ({ assignmentOverrides, foId }) => {
+      const now = new Date().toISOString();
+      const today = now.slice(0, 10);
+      const business = { id: "biz1", name: "Test Biz", category: "General", area: "Area", address: "", capacityHoursPerDay: 3, active: true, createdAt: now };
+      const fo = { id: foId, name: "Test FO", active: true, createdAt: now };
+      const rig = { id: "rig1", code: "R-1", model: "Test Rig", active: true, batteryPct: 100, storagePct: 0, deploymentStatus: "active", createdAt: now };
+      const assignment = {
+        id: "asg_precheck_race_test",
+        date: today,
+        businessId: business.id,
+        foId,
+        rigId: rig.id,
+        plannedStart: `${today}T08:00:00.000Z`,
+        plannedEnd: `${today}T11:00:00.000Z`,
+        priority: "normal",
+        status: "confirmed",
+        actualArrivalAt: now,
+        createdAt: now,
+        ...assignmentOverrides,
+      };
+      const locationEvidence = {
+        id: "ev_location_precheck_race",
+        assignmentId: assignment.id,
+        businessId: business.id,
+        foId,
+        type: "LOCATION",
+        startedAt: now,
+        capturedAt: now,
+        files: [],
+        status: "submitted",
+        createdAt: now,
+      };
+      const cityData = {
+        version: 2,
+        settings: { cityName: "Test City", workingHoursStart: "08:00", workingHoursEnd: "19:00", defaultSessionDurationMin: 120, recordingHoursTargetPerDay: 10, theme: "dark", onboarded: true },
+        businesses: [business],
+        fos: [fo],
+        collectors: [],
+        rigs: [rig],
+        assignments: [assignment],
+        sessions: [],
+        evidence: [locationEvidence],
+        issues: [],
+        qualityReviews: [],
+        correctiveActions: [],
+        rigIncidents: [],
+        repairRecords: [],
+        activity: [],
+        plans: [],
+        reports: [],
+      };
+      localStorage.setItem("city-ops-os", JSON.stringify({ state: cityData, version: 2 }));
+      localStorage.setItem(
+        "city-ops-auth",
+        JSON.stringify({ id: "demo-fo-test-" + foId, email: "test-fo@demo.city-ops", role: "FIELD_OFFICER", displayName: "Test FO", foId, createdAt: now }),
+      );
+      const mockStore = {
+        businesses: { [business.id]: business },
+        fos: { [fo.id]: fo },
+        rigs: { [rig.id]: rig },
+        assignments: { [assignment.id]: assignment },
+        evidence: { [locationEvidence.id]: locationEvidence },
+      };
+      localStorage.setItem("__mock_firestore_store__", JSON.stringify(mockStore));
+    },
+    { assignmentOverrides, foId: FO_ID },
   );
 }
 
@@ -503,6 +590,56 @@ async function main() {
     const quarantinedEntry4 = await readRawOutboxEntry(page4, "assignments", ASG_ID_4);
     check(!!quarantinedEntry4 && quarantinedEntry4.needsManualReview === true, "the stale entry is preserved in the outbox, flagged for manual review, rather than silently converted into a partial write");
     check(quarantinedEntry4 && quarantinedEntry4.data.status === "in_progress", "the preserved entry still carries its original (stale) status value untouched — nothing was invented or dropped");
+
+    // ------------------------------------------------------------ [5]
+    console.log("\n[5] A failed Rig Precheck (reportRigIncident()) creates the rigIncident ONCE, complete, with linkedIssueId already in its initial payload — no create-then-clobbering-update race:");
+    const context5 = await browser.newContext();
+    const page5 = await context5.newPage();
+    await page5.addInitScript(MOCK_BACKEND_INIT_SCRIPT);
+    await page5.addInitScript(AUTH_PROVIDER_INIT_SCRIPT);
+    page5.on("pageerror", (err) => console.error("  [page error]", err.stack || err.message));
+
+    await page5.goto(`${BASE_URL}/login`);
+    await seedCityDataAtPrecheckStage(page5);
+    await sleep(1000); // let the /login page's own harmless boot settle, same reasoning as [3]/[4]
+
+    await page5.goto(`${BASE_URL}/fo`);
+    await page5.waitForSelector("text=Test Biz", { timeout: 15000 });
+    await page5.click("text=Test Biz");
+    const submitPrecheckBtn = page5.getByRole("button", { name: "Submit Precheck" });
+    await submitPrecheckBtn.waitFor({ timeout: 15000 });
+    check(await submitPrecheckBtn.isDisabled(), "sanity check: Submit Precheck is disabled before any photo is attached");
+
+    // Deliberately leave every checklist item unchecked (default state) so
+    // every CRITICAL item fails — submitPrecheck()'s own passed/failed
+    // logic (src/engine/workflows.ts) then calls reportRigIncident(),
+    // exactly the path this scenario needs to exercise. Attaching a photo
+    // is the only other precondition the button enforces.
+    const precheckFileInput = page5.locator('input[type="file"]').first();
+    await precheckFileInput.setInputFiles({ name: "rig.png", mimeType: "image/png", buffer: Buffer.from(ONE_PX_PNG_BASE64, "base64") });
+    await sleep(400); // durable stash (IndexedDB) + onChange to settle, same as evidence-capture-fix.regression.mjs
+    check(!(await submitPrecheckBtn.isDisabled()), "Submit Precheck becomes enabled once a photo is attached");
+    await submitPrecheckBtn.click();
+    await sleep(1500); // let the resulting store mutations -> outbox -> mock putDoc chain settle
+
+    const mockStore5 = await page5.evaluate(() => JSON.parse(localStorage.getItem("__mock_firestore_store__") || "{}"));
+    const incidentIds = Object.keys(mockStore5.rigIncidents ?? {});
+    check(incidentIds.length === 1, `exactly one rigIncident document exists in the mock backend after the failed precheck (got ${incidentIds.length})`);
+    const incidentId = incidentIds[0];
+
+    const rigIncidentCalls = (await getPutDocCalls(page5)).filter((c) => c.collection === "rigIncidents" && c.id === incidentId);
+    check(rigIncidentCalls.length === 1, `exactly ONE putDoc call was made for this rigIncident — no separate updateRigIncident() call followed the create (got ${rigIncidentCalls.length} calls)`);
+
+    const createPayload = rigIncidentCalls[0]?.data ?? {};
+    check("linkedIssueId" in createPayload, "linkedIssueId is present in the SAME (and only) call that created the document — not a later, separate update");
+    check(typeof createPayload.linkedIssueId === "string" && createPayload.linkedIssueId.length > 0, "linkedIssueId is a real issue id, not a placeholder");
+    check("foId" in createPayload && createPayload.foId === FO_ID, "the create payload contains foId — required by the rigIncidents create rule");
+    for (const requiredField of ["rigId", "category", "group", "severity", "discoveredAt", "discoveryStage", "description", "evidence", "status", "lostHours"]) {
+      check(requiredField in createPayload, `the create payload retains its own field '${requiredField}' — the full incident, not just {linkedIssueId}`);
+    }
+
+    const issueIds = Object.keys(mockStore5.issues ?? {});
+    check(issueIds.length === 1 && issueIds[0] === createPayload.linkedIssueId, "the linkedIssueId matches a real Issue document that actually exists in the mock backend");
 
     if (failures > 0) console.error("\n--- preview server output (for debugging) ---\n" + serverOutput.slice(-4000));
   } finally {

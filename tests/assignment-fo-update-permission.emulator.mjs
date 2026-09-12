@@ -344,6 +344,34 @@ async function main() {
     await assertSucceeds(updateDoc(doc(fo1Db, "rigIncidents", incFirstSet), { linkedIssueId: "iss_first_time" }));
     console.log("  PASS: setting linkedIssueId for the first time still works after the deletion guard");
 
+    console.log(
+      "\n[create-time regression] reportRigIncident()'s fixed shape — the incident CREATED ONCE with linkedIssueId already embedded, never a separate update — is accepted by the create rule:",
+    );
+    // Mirrors the exact fix in src/engine/workflows.ts: the outbox key for
+    // assignments/rigIncidents is deterministic (outbox:rigIncidents:<id>),
+    // so a create immediately followed by a separate updateRigIncident()
+    // call on that SAME id used to collapse onto one outbox entry — the
+    // update's enqueue() (last write wins) silently clobbered the create's
+    // full payload before it was ever drained, leaving only
+    // {linkedIssueId} to reach Firestore: no foId, so even the CREATE rule
+    // (not just update) denied it, since the target document never
+    // existed. reportRigIncident() no longer does this — it creates the
+    // incident exactly once, complete, with linkedIssueId already set. This
+    // asserts the rules actually accept that combined shape as a CREATE
+    // (setDoc against a brand-new id, security rules NOT disabled).
+    const incCreateWithLink = "rin_create_with_linked_issue";
+    await assertSucceeds(
+      setDoc(doc(fo1Db, "rigIncidents", incCreateWithLink), {
+        ...baseIncident(incCreateWithLink, FO1_ID),
+        linkedIssueId: "iss_created_together",
+      }),
+    );
+    const storedCreateWithLink = await getDoc(doc(fo1Db, "rigIncidents", incCreateWithLink));
+    check(storedCreateWithLink.exists(), "the combined create+linkedIssueId document was actually created");
+    check(storedCreateWithLink.data()?.linkedIssueId === "iss_created_together", "linkedIssueId survived the create, exactly as reportRigIncident() now sends it");
+    check(storedCreateWithLink.data()?.foId === FO1_ID, "foId is present on the created document — what the create rule actually checks");
+    check(storedCreateWithLink.data()?.category === "unknown_technical" && storedCreateWithLink.data()?.severity === "critical", "every other incident field from the create payload also persisted, not just linkedIssueId");
+
     // ============================================ Other collections unaffected
     console.log("\n=== Sanity: unrelated collections' rules unchanged ===");
     const evOther = "ev_sanity_check";

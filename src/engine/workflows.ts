@@ -494,11 +494,44 @@ export function reportRigIncident(params: {
   evidence?: IncidentEvidenceFile[];
   lostHours?: number;
 }) {
-  const { addRigIncident, addIssue, updateRigIncident, logActivity, rigs } = useCity.getState();
+  const { addRigIncident, addIssue, logActivity, rigs } = useCity.getState();
   const rig = rigs.find((r) => r.id === params.rigId);
   const now = nowISO();
   const group = categoryGroup(params.category);
   const lostHours = params.lostHours ?? estimateIncidentLostHours(useCity.getState(), { assignmentId: params.assignmentId, severity: params.severity, discoveredAt: now });
+
+  // Issue created FIRST, RigIncident second, with linkedIssueId already
+  // included in the incident's OWN initial create payload — never a
+  // separate updateRigIncident() call afterward. The two are independent
+  // documents (Issue never references the incident's id), so this
+  // ordering costs nothing semantically, but it matters a great deal for
+  // sync: outbox.ts's outbox key is deterministic
+  // (`outbox:rigIncidents:<id>`), so a create immediately followed by an
+  // update to that SAME id — the old ordering — collapses onto that one
+  // key, and the update's enqueue() (last write wins, by design — see
+  // keyFor()'s own comment) silently overwrites the create's payload
+  // before it's ever drained. What reaches Firestore is then only
+  // `{linkedIssueId}`, with no foId — which the rigIncidents CREATE rule
+  // denies (request.resource.data.foId == myFoId() has nothing to check),
+  // and drainOutbox() then blocks its entire queue behind that permanent
+  // denial. Creating the incident exactly once, complete, sidesteps this
+  // structurally: there is no second write to this id to race with.
+  const issue = addIssue(
+    omitUndefined({
+      type: ISSUE_TYPE_BY_GROUP[group],
+      severity: params.severity,
+      title: `${rig?.code ?? "Rig"}: ${categoryLabel(params.category)}`,
+      description: params.description || categoryLabel(params.category),
+      businessId: params.businessId,
+      foId: params.foId,
+      rigId: params.rigId,
+      sessionId: params.sessionId,
+      assignmentId: params.assignmentId,
+      owner: "You",
+      status: "open",
+      lostHours,
+    }),
+  );
 
   // omitUndefined: sessionId/assignmentId/businessId/foId are optional and
   // frequently absent (e.g. reporting an incident with only a rigId) —
@@ -520,27 +553,9 @@ export function reportRigIncident(params: {
       evidence: params.evidence ?? [],
       status: "open",
       lostHours,
+      linkedIssueId: issue.id,
     }),
   );
-
-  const issue = addIssue(
-    omitUndefined({
-      type: ISSUE_TYPE_BY_GROUP[group],
-      severity: params.severity,
-      title: `${rig?.code ?? "Rig"}: ${categoryLabel(params.category)}`,
-      description: params.description || categoryLabel(params.category),
-      businessId: params.businessId,
-      foId: params.foId,
-      rigId: params.rigId,
-      sessionId: params.sessionId,
-      assignmentId: params.assignmentId,
-      owner: "You",
-      status: "open",
-      lostHours,
-    }),
-  );
-
-  updateRigIncident(incident.id, { linkedIssueId: issue.id });
 
   logActivity({
     type: "rig_incident_reported",
