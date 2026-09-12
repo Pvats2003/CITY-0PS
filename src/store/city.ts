@@ -5,6 +5,7 @@ import { id } from "@/lib/id";
 import { nowISO } from "@/lib/dates";
 import { omitUndefined } from "@/lib/omitUndefined";
 import { deriveAssignmentId } from "@/lib/assignmentIdentity";
+import { recordPatch } from "@/data/pendingFieldPatches";
 import type {
   CityData,
   Business,
@@ -254,11 +255,19 @@ export const useCity = create<CityStore>()(
         });
         return item;
       },
-      updateRigIncident: (rid, patch) =>
+      updateRigIncident: (rid, patch) => {
+        // Traced at the source for syncEngine.ts's partial-patch outbox
+        // path (see pendingFieldPatches.ts) — this is the one place that
+        // genuinely knows which fields THIS call intended to change,
+        // regardless of which of those fields firestore.rules' FO update
+        // grant does or doesn't allow (linkedIssueId only); the sync layer
+        // decides what to do with that, not this store action.
+        recordPatch("rigIncidents", rid, patch);
         set((s) => {
           const r = s.rigIncidents.find((x) => x.id === rid);
           if (r) Object.assign(r, patch);
-        }),
+        });
+      },
       addRepairRecord: (r) => {
         const item: RepairRecord = { ...r, id: id("rep_rec"), createdAt: nowISO() };
         set((s) => {
@@ -315,11 +324,22 @@ export const useCity = create<CityStore>()(
         }
         return result!;
       },
-      updateAssignment: (aid, patch) =>
+      updateAssignment: (aid, patch) => {
+        // Traced at the source for syncEngine.ts's partial-patch outbox
+        // path (see pendingFieldPatches.ts) — this call site is the one
+        // place that genuinely knows which fields were intended to change
+        // (e.g. just {enRouteAt} from markEnRoute(), or {status,
+        // actualArrivalAt, actualStart, sessionId} from
+        // startSessionForAssignment()), independent of whether the
+        // current caller is the FO (whose firestore.rules update grant is
+        // field-scoped) or the Manager (unrestricted) — the sync layer
+        // decides what to do with that, not this store action.
+        recordPatch("assignments", aid, patch);
         set((s) => {
           const a = s.assignments.find((x) => x.id === aid);
           if (a) Object.assign(a, patch);
-        }),
+        });
+      },
       removeAssignment: (aid) =>
         set((s) => {
           s.assignments = s.assignments.filter((x) => x.id !== aid);

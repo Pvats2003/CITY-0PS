@@ -4,8 +4,9 @@ import { waitForAuthReady } from "@/auth/authReady";
 import type { UserRole } from "@/auth/types";
 import { COLLECTION_NAMES, type CollectionName, type RemoteBackend } from "./backend";
 import { localBackend } from "./localBackend";
-import { enqueue, drainOutbox, clearSyncError, getCollectionSyncError } from "./outbox";
+import { enqueue, drainOutbox, clearSyncError, getCollectionSyncError, peekOutboxEntriesForCollection, flagOutboxEntryNeedsManualReview } from "./outbox";
 import { drainMediaOutbox, onMediaOutboxChange } from "./mediaOutbox";
+import { peekPatch, clearPatchFields } from "./pendingFieldPatches";
 import type { CityStore } from "@/store/city";
 import type { Evidence } from "@/types";
 
@@ -122,6 +123,124 @@ async function enqueueEvidenceOnce(record: Evidence): Promise<void> {
     console.error("[CITY-OPS] failed to durably enqueue evidence " + record.id + " to the outbox — will retry on the next sync pass", err);
   } finally {
     pendingEvidenceEnqueues.delete(record.id);
+  }
+}
+
+// The EXACT fields firestore.rules grants an FO permission to update on
+// each of these two collections — MUST stay in sync with firestore.rules
+// (same "keep in sync" contract already documented on
+// FIELD_OFFICER_COLLECTIONS above). Used two ways below: (1) purely as a
+// DETECTOR at drain time — is this already-queued outbox entry shaped like
+// a full-record snapshot from an older build (i.e. does it carry ANY field
+// outside this list), never to decide what to forward — and (2) implicitly,
+// since pendingFieldPatches.ts's tracked patches can only ever contain
+// fields store/city.ts's updateAssignment()/updateRigIncident() call sites
+// actually set — which, for every FO-triggered call site in
+// engine/workflows.ts, is always a subset of these same lists anyway.
+const ASSIGNMENT_FO_UPDATE_FIELDS = new Set([
+  "enRouteAt",
+  "actualArrivalAt",
+  "actualStart",
+  "actualEnd",
+  "installationStartedAt",
+  "sessionId",
+  "status",
+]);
+const RIG_INCIDENT_FO_UPDATE_FIELDS = new Set(["linkedIssueId"]);
+
+/** One-time-per-startup pass for an FO session only, over any
+ * ALREADY-QUEUED assignments/rigIncidents outbox entry that still carries
+ * a full-record snapshot (enqueued by an older build, before field-scoped
+ * update grants existed). This is the "stale existing outbox entries" half
+ * of the fix — the patch-tracing mechanism below (pendingFieldPatches.ts)
+ * only affects entries enqueued AFTER this code is running; it does
+ * nothing for whatever is already sitting in a device's IndexedDB from
+ * before the update.
+ *
+ * Deliberately does NOT reduce such an entry down to "just its allowed
+ * fields" and resend that as a patch — an earlier version of this fix did
+ * exactly that, and it was wrong: an allowed field NAME (status, sessionId,
+ * actualStart, ...) is no guarantee the entry's VALUE for that field is
+ * still current. The entry is a frozen snapshot from whenever the old
+ * build last wrote it; if the server (or a later, already-synced write
+ * from this same FO) has since moved that field forward, blindly
+ * forwarding the snapshot's value would silently regress it — merely
+ * because the field's NAME happens to appear on the allowed list, which
+ * says nothing about whether THIS particular stale copy of its value is
+ * safe to write. Firestore's field-scoped rule can't catch that: it only
+ * checks which keys changed, never whether the new value is "current."
+ *
+ * Instead: try to recover the entry's TRUE mutation intent from
+ * pendingFieldPatches.ts, which is what fresh writes already use — but
+ * that map only ever reflects a call made THIS session (see its own
+ * comment), and this function runs at the very top of startSyncEngine(),
+ * strictly before attachLocalWatcher() is ever attached and therefore
+ * before any store mutation this session could possibly have recorded
+ * one. So for every entry that actually reaches this code, recovery is
+ * structurally impossible right now — checked anyway, defensively, so
+ * that if pendingFieldPatches is ever seeded from durable state in the
+ * future, genuine recovered intent takes priority over quarantining
+ * without this function needing to change.
+ *
+ * When intent can't be recovered, the entry is quarantined IN PLACE
+ * (outbox.ts's flagOutboxEntryNeedsManualReview()) rather than cleared or
+ * rewritten: its full original `data` — every field, unchanged — stays
+ * exactly as queued, available for explicit/manual recovery, and
+ * drainOutbox() skips it (never sends it, never deletes it) so it can't
+ * permanently block every other collection's writes behind an update that
+ * would always be denied anyway (it still carries fields no FO update
+ * grant allows). A genuine NEW mutation on the same record still
+ * overwrites this exact outbox key with a fresh, fully-automatic,
+ * correctly-scoped patch via enqueueScopedPatch() below the moment the FO
+ * acts on it again — quarantining an old entry never blocks that.
+ *
+ * Idempotent either way: an entry with no field outside the allowed list
+ * (a genuine patch created by the current code, or a previously-quarantined
+ * entry a fresh mutation has since superseded) is left completely alone. */
+async function quarantineStaleScopedOutboxEntries(): Promise<void> {
+  const jobs: Array<["assignments" | "rigIncidents", Set<string>]> = [
+    ["assignments", ASSIGNMENT_FO_UPDATE_FIELDS],
+    ["rigIncidents", RIG_INCIDENT_FO_UPDATE_FIELDS],
+  ];
+  for (const [collection, allowed] of jobs) {
+    const entries = await peekOutboxEntriesForCollection(collection);
+    for (const entry of entries) {
+      if (entry.data === null) continue; // a deletion tombstone — nothing to project, nothing stale about it
+      const hasExtraField = Object.keys(entry.data).some((field) => !allowed.has(field));
+      if (!hasExtraField) continue; // already correctly scoped — safe to auto-drain as-is, leave untouched
+
+      const recoveredIntent = peekPatch(collection, entry.id);
+      if (recoveredIntent && Object.keys(recoveredIntent).length > 0) {
+        // Genuine recovered intent (see the comment above on when this can
+        // actually happen) always takes priority over quarantining.
+        await enqueueScopedPatch(collection, entry.id);
+        continue;
+      }
+
+      await flagOutboxEntryNeedsManualReview(collection, entry.id);
+    }
+  }
+}
+
+/** Enqueues the currently-accumulated partial patch for one assignment or
+ * rigIncident record (see pendingFieldPatches.ts) — never the full local
+ * record. Mirrors enqueueEvidenceOnce()'s discipline: peek without
+ * clearing, attempt enqueue(), and only remove the attempted fields from
+ * the pending accumulator once enqueue() has actually resolved. If
+ * enqueue() fails, nothing is cleared — the fields stay pending for the
+ * next local mutation (or startup) to retry, exactly like a genuine
+ * enqueue() failure is already handled for evidence. Overwriting via
+ * enqueue() also naturally supersedes (never blocked by) any previously
+ * quarantined stale entry for this exact id — see
+ * quarantineStaleScopedOutboxEntries() above. */
+async function enqueueScopedPatch(collection: "assignments" | "rigIncidents", id: string): Promise<void> {
+  const patch = peekPatch(collection, id);
+  if (!patch || Object.keys(patch).length === 0) return;
+  try {
+    await enqueue({ collection, id, data: patch });
+    clearPatchFields(collection, id, patch);
+  } catch (err) {
+    console.error(`[CITY-OPS] failed to durably enqueue ${collection} patch for ${id} — will retry on the next local mutation`, err);
   }
 }
 
@@ -283,6 +402,14 @@ export async function startSyncEngine(): Promise<void> {
   // Set empty while Firestore already durably has these records.
   if (scope) {
     for (const id of loadPersistedSyncedEvidenceIds()) syncedEvidenceOnceIds.add(id);
+    // Find (and safely quarantine, never auto-resend) any assignments/
+    // rigIncidents outbox entry left over from before this build's
+    // field-scoped update grants existed — see
+    // quarantineStaleScopedOutboxEntries()'s own doc comment. Only
+    // meaningful for an FO session (Manager writes are never
+    // field-restricted); awaited before the first drainOutbox() call below
+    // so a stale entry is never even attempted against the live rules.
+    await quarantineStaleScopedOutboxEntries();
   }
 
   // Remote -> local: each collection's current document set replaces ours.
@@ -356,6 +483,27 @@ export async function startSyncEngine(): Promise<void> {
             // (post-success-only) durable mark — see its doc comment for
             // why marking must never happen before enqueue() resolves.
             queued.push(enqueueEvidenceOnce(record as unknown as Evidence));
+            continue;
+          }
+          if ((name === "assignments" || name === "rigIncidents") && scope && prevById.has(record.id)) {
+            // An UPDATE (not a create — prevById already has this id) to a
+            // record the FO already had locally. Never send the full
+            // locally-cached record for these two collections when scoped
+            // to an FO: firestore.rules restricts their update grant to a
+            // fixed field list, evaluated against whatever the diff shows
+            // versus the LIVE server document. Sending the whole cached
+            // record risks an unrelated, Manager-owned field (priority,
+            // reviewStatus, severity, status on an incident the Manager
+            // has since advanced, ...) that silently drifted between this
+            // local snapshot and the server being flagged as an "affected
+            // key" outside the allowed list — denying the WHOLE write even
+            // though every field the FO actually meant to change is
+            // allowed. This is the exact production symptom: writes stuck
+            // behind a permission-denied that isn't the FO's own fault.
+            // enqueueScopedPatch() sends only the fields
+            // updateAssignment()/updateRigIncident() actually recorded as
+            // changed (pendingFieldPatches.ts) — never a snapshot diff.
+            queued.push(enqueueScopedPatch(name, record.id));
             continue;
           }
           queued.push(enqueue({ collection: name, id: record.id, data: record as unknown as Record<string, unknown> }));

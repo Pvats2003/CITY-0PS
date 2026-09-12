@@ -226,6 +226,25 @@ async function main() {
     await assertFails(setDoc(doc(fo1Db, "assignments", "asg_fo_created"), baseAssignment("asg_fo_created", FO1_ID)));
     console.log("  PASS: FO cannot create assignments — assignments remain Manager/Planner-authored only");
 
+    console.log("\n[partial patch] a genuine partial patch containing ONLY an allowed field succeeds even when an UNRELATED field on the server differs from whatever the FO's stale local cache would have held — the exact production root cause this round's fix targets:");
+    const idDrift = "asg_partial_patch_drift";
+    await seedAssignment(idDrift, FO1_ID); // priority: "normal" (see baseAssignment())
+    // Simulate a Manager changing an unrelated field server-side AFTER the
+    // FO's local snapshot would have been taken — e.g. re-prioritizing the
+    // visit while the FO is en route. A stale FULL-SNAPSHOT outbox entry
+    // (the old, pre-fix behavior) would still be carrying priority:"normal"
+    // and would get its ENTIRE write denied for touching an "affected key"
+    // (priority) outside the allowed list. A genuine partial patch never
+    // mentions priority at all, so this can't happen.
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await updateDoc(doc(ctx.firestore(), "assignments", idDrift), { priority: "high" });
+    });
+    await assertSucceeds(updateDoc(doc(fo1Db, "assignments", idDrift), { status: "in_progress" }));
+    const storedDrift = await getDoc(doc(fo1Db, "assignments", idDrift));
+    check(storedDrift.data()?.status === "in_progress", "the FO's own status update was applied");
+    check(storedDrift.data()?.priority === "high", "the Manager's unrelated priority change (which the FO's payload never mentioned) was left completely untouched");
+    console.log("  PASS: a status-only patch succeeds and doesn't clobber or get blocked by a field the FO's payload never referenced");
+
     console.log("\n[deletion] own FO cannot DELETE an allowed field — affectedKeys().hasOnly([...]) alone does not distinguish set vs delete, since a removed key is still an affected key:");
     for (const field of ["status", "sessionId", "actualArrivalAt", "enRouteAt", "actualStart", "actualEnd", "installationStartedAt"]) {
       const id = `asg_delete_${field}`;

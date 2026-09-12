@@ -20,6 +20,22 @@ export interface OutboxEntry {
   /** null means "delete this record" — a tombstone. */
   data: Record<string, unknown> | null;
   queuedAt: string;
+  /** True only for a pre-existing full-record snapshot (queued by a build
+   * before field-scoped FO update grants existed on assignments/
+   * rigIncidents) that this build found still sitting in the outbox at
+   * startup and could not safely reduce to just its allowed fields — an
+   * allowed field's NAME says nothing about whether this particular
+   * snapshot's VALUE for it is still current, so guessing would risk
+   * silently regressing the server. See syncEngine.ts's
+   * quarantineStaleScopedOutboxEntries(). Never set by any normal write
+   * path — enqueue() never writes it. drainOutbox() skips (never sends,
+   * never deletes) any entry flagged this way, so it can't block the rest
+   * of the queue behind a write that would always be denied anyway; the
+   * entry's `data` stays exactly as originally queued, untouched, for
+   * explicit/manual recovery. A fresh enqueue() for the same id (a new,
+   * legitimate mutation) overwrites the whole entry as normal and clears
+   * this flag along with it. */
+  needsManualReview?: boolean;
 }
 
 const OUTBOX_CHANGE_EVENT = "city-ops-outbox-change";
@@ -61,6 +77,43 @@ export async function enqueue(entry: { collection: CollectionName; id: string; d
 export async function outboxDepth(): Promise<number> {
   const allKeys = await keys();
   return allKeys.filter((k) => typeof k === "string" && k.startsWith("outbox:")).length;
+}
+
+/** Read-only peek at every currently-queued outbox entry for one
+ * collection. Used by syncEngine.ts to find stale full-record snapshots
+ * left over from before a field-restricted update grant existed — never
+ * deletes or mutates anything itself; a caller that wants to change an
+ * entry still goes through enqueue() (a genuine new write) or
+ * flagOutboxEntryNeedsManualReview() (quarantining an unsafe one), the two
+ * write paths, same as any other collection. */
+export async function peekOutboxEntriesForCollection(collection: CollectionName): Promise<OutboxEntry[]> {
+  const prefix = `outbox:${collection}:`;
+  const allKeys = (await keys()).filter((k): k is string => typeof k === "string" && k.startsWith(prefix));
+  const entries: OutboxEntry[] = [];
+  for (const key of allKeys) {
+    const entry = (await get(key)) as OutboxEntry | undefined;
+    if (entry) entries.push(entry);
+  }
+  return entries;
+}
+
+/** Marks an already-queued outbox entry as unsafe to auto-send, WITHOUT
+ * touching its `data` in any way — every field stays exactly as queued,
+ * nothing removed, nothing rewritten, nothing deleted. Used exclusively by
+ * syncEngine.ts's quarantineStaleScopedOutboxEntries() for a stale
+ * full-record snapshot whose true mutation intent can't be recovered (see
+ * that function's own doc comment for why forwarding even just its
+ * "allowed-named" fields would be unsafe). drainOutbox() skips any entry
+ * with this flag set — never attempts to send it, never removes it — so a
+ * write that would always be denied can't permanently block every other
+ * collection's writes behind it. A no-op if the entry is already gone
+ * (drained or superseded) or already flagged. */
+export async function flagOutboxEntryNeedsManualReview(collection: CollectionName, id: string): Promise<void> {
+  const key = keyFor(collection, id);
+  const entry = (await get(key)) as OutboxEntry | undefined;
+  if (!entry || entry.needsManualReview) return;
+  await set(key, { ...entry, needsManualReview: true } satisfies OutboxEntry);
+  notifyChange();
 }
 
 interface SyncErrorDetail {
@@ -222,6 +275,14 @@ export async function drainOutbox(backend: RemoteBackend): Promise<void> {
     for (const key of allKeys) {
       const entry = (await get(key)) as OutboxEntry | undefined;
       if (!entry) continue;
+      // Quarantined by syncEngine.ts's quarantineStaleScopedOutboxEntries()
+      // — a stale full-record snapshot whose true mutation intent couldn't
+      // be recovered, so it's never auto-sent (see OutboxEntry's own doc
+      // comment on needsManualReview). Skipping it here, rather than
+      // attempting and hitting the same permission-denied every single
+      // drain, is what keeps it from permanently blocking every other
+      // collection's writes behind it via the `break` below.
+      if (entry.needsManualReview) continue;
       try {
         if (entry.data === null) await backend.deleteDoc(entry.collection, entry.id);
         else await backend.putDoc(entry.collection, entry.id, omitUndefined(entry.data));
