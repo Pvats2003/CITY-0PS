@@ -372,6 +372,31 @@ async function main() {
     check(storedCreateWithLink.data()?.foId === FO1_ID, "foId is present on the created document — what the create rule actually checks");
     check(storedCreateWithLink.data()?.category === "unknown_technical" && storedCreateWithLink.data()?.severity === "critical", "every other incident field from the create payload also persisted, not just linkedIssueId");
 
+    console.log(
+      "\n[legacy orphan regression] the EXACT clobbered shape a pre-11f4f9a build's create/update race left behind — {linkedIssueId} alone, against a document that was never actually created — is denied, proving this is the real PERMISSION_DENIED source for any such entry still sitting in a device's outbox:",
+    );
+    // This is the payload src/data/outbox.ts's drainOutbox() would send for
+    // a LEGACY outbox entry created before the 11f4f9a fix — one
+    // reportRigIncident() call's addRigIncident() create was enqueued, then
+    // immediately clobbered by that same call's updateRigIncident()
+    // writing to the exact same deterministic outbox key, before either
+    // was ever drained. What's left, forever, in a device that already had
+    // this happen before upgrading to the fix, is exactly this: no
+    // document created server-side, and only {linkedIssueId} ever queued
+    // to send. firebaseBackend.ts's putDoc() always uses setDoc(...,
+    // {merge:true}) — against a target that doesn't exist, Firestore
+    // evaluates this as a CREATE, and the create rule's own
+    // request.resource.data.foId == myFoId() check fails since this
+    // payload never carries foId.
+    const incNeverCreated = "rin_legacy_orphan_emulator";
+    await assertFails(setDoc(doc(fo1Db, "rigIncidents", incNeverCreated), { linkedIssueId: "iss_legacy_orphan" }, { merge: true }));
+    let storedNeverCreatedExists = true;
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      const snap = await getDoc(doc(ctx.firestore(), "rigIncidents", incNeverCreated));
+      storedNeverCreatedExists = snap.exists();
+    });
+    check(!storedNeverCreatedExists, "confirmed: the document was never created — this write was denied outright, not partially applied");
+
     // ============================================ Other collections unaffected
     console.log("\n=== Sanity: unrelated collections' rules unchanged ===");
     const evOther = "ev_sanity_check";

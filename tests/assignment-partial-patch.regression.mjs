@@ -129,6 +129,21 @@ const MOCK_BACKEND_INIT_SCRIPT = `
       appendCall({ collection, id, data, at: new Date().toISOString() });
       const store = readStore();
       store[collection] = store[collection] || {};
+      // Narrow, targeted simulation of firestore.rules' actual rigIncidents
+      // CREATE rule (allow create: if isFieldOfficer() && request.resource
+      // .data.foId == myFoId()) for exactly the shape a legacy, pre-11f4f9a
+      // clobbered outbox entry has: a document that does not exist yet on
+      // the "server" (this mock store), targeted with a payload that omits
+      // foId — this mock never runs real rules, so this one case is
+      // reproduced explicitly rather than left to always-succeed. Every
+      // other collection/shape keeps the existing always-succeeds mock
+      // behavior, unchanged.
+      const alreadyExists = Object.prototype.hasOwnProperty.call(store[collection], id);
+      if (collection === "rigIncidents" && !alreadyExists && !("foId" in data)) {
+        const err = new Error("Missing or insufficient permissions.");
+        err.code = "permission-denied";
+        throw err;
+      }
       store[collection][id] = { ...(store[collection][id] || {}), ...data };
       writeStore(store);
     },
@@ -640,6 +655,73 @@ async function main() {
 
     const issueIds = Object.keys(mockStore5.issues ?? {});
     check(issueIds.length === 1 && issueIds[0] === createPayload.linkedIssueId, "the linkedIssueId matches a real Issue document that actually exists in the mock backend");
+
+    // ------------------------------------------------------------ [6]
+    console.log("\n[6] A LEGACY {linkedIssueId}-only rigIncidents entry (the clobbered remnant a pre-11f4f9a build's create/update race left behind) is now recognized by isLegacyRigIncidentLinkedIssueIdOrphan(), quarantined in place, NEVER sent, and no longer blocks later collections sorting after it:");
+    const context6 = await browser.newContext();
+    const page6 = await context6.newPage();
+    await page6.addInitScript(MOCK_BACKEND_INIT_SCRIPT);
+    await page6.addInitScript(AUTH_PROVIDER_INIT_SCRIPT);
+    page6.on("pageerror", (err) => console.error("  [page error]", err.stack || err.message));
+
+    const ASG_ID_6 = "asg_legacy_orphan_test";
+    await page6.goto(`${BASE_URL}/login`);
+    await seedCityData(page6, baseAssignment({ id: ASG_ID_6 }));
+    await sleep(1000); // let the /login page's own harmless boot settle, same reasoning as [3]/[4]/[5]
+
+    // The exact clobbered shape: {linkedIssueId} alone, no foId, no other
+    // incident field — a pre-11f4f9a build's create/update race is the
+    // ONLY way this shape could ever exist, since the current build never
+    // calls updateRigIncident() with linkedIssueId at all (reportRigIncident()
+    // embeds it in the initial create only — see
+    // isLegacyRigIncidentLinkedIssueIdOrphan()'s own comment in
+    // syncEngine.ts). The rigIncidents document rin_legacy_orphan was never
+    // actually created (that create's own outbox entry was clobbered by
+    // this same one, before this fix existed) — it doesn't exist anywhere
+    // in the mock "remote" store either.
+    await writeRawOutboxEntry(page6, {
+      key: "outbox:rigIncidents:rin_legacy_orphan",
+      value: { collection: "rigIncidents", id: "rin_legacy_orphan", data: { linkedIssueId: "iss_legacy_orphan" }, queuedAt: new Date().toISOString() },
+    });
+    // A genuinely valid, unrelated write queued for a collection that
+    // sorts AFTER "rigIncidents" lexicographically ("rigIncidents" <
+    // "sessions") — sessions has no field-scoped rule at all, so this
+    // would normally drain instantly. Written directly (rather than driven
+    // through the UI) since the point under test is drainOutbox()'s own
+    // key-ordering behavior, not how a session gets created.
+    await writeRawOutboxEntry(page6, {
+      key: "outbox:sessions:sess_legit_blocked",
+      value: {
+        collection: "sessions",
+        id: "sess_legit_blocked",
+        data: { id: "sess_legit_blocked", assignmentId: ASG_ID_6, businessId: "biz1", foId: FO_ID, rigId: "rig1", date: today, startedAt: now, plannedDurationMin: 120, status: "active" },
+        queuedAt: new Date().toISOString(),
+      },
+    });
+
+    await page6.goto(`${BASE_URL}/fo`);
+    await page6.waitForSelector("text=Test Biz", { timeout: 15000 });
+    await sleep(1500); // let quarantineStaleScopedOutboxEntries() + any drain attempts settle
+
+    const legacyEntryAfter = await readRawOutboxEntry(page6, "rigIncidents", "rin_legacy_orphan");
+    check(!!legacyEntryAfter, "the legacy entry is still present (never deleted, never cleared)");
+    check(
+      legacyEntryAfter?.needsManualReview === true,
+      "FIXED: quarantineStaleScopedOutboxEntries() now flags this entry — isLegacyRigIncidentLinkedIssueIdOrphan() recognizes the exact {linkedIssueId}-only shape even though every field it carries is on the allow-list",
+    );
+    check(
+      legacyEntryAfter && JSON.stringify(legacyEntryAfter.data) === JSON.stringify({ linkedIssueId: "iss_legacy_orphan" }),
+      "the quarantined entry's data is untouched — still exactly {linkedIssueId: iss_legacy_orphan}, nothing rewritten or invented",
+    );
+
+    const rigIncidentAttempts = (await getPutDocCalls(page6)).filter((c) => c.collection === "rigIncidents" && c.id === "rin_legacy_orphan");
+    check(rigIncidentAttempts.length === 0, "the legacy entry was NEVER attempted against the backend — quarantined before drainOutbox() ever got to it, so it can no longer generate a single PERMISSION_DENIED");
+
+    const sessionAttempts = (await getPutDocCalls(page6)).filter((c) => c.collection === "sessions" && c.id === "sess_legit_blocked");
+    check(sessionAttempts.length === 1, "the unrelated, valid sessions entry WAS sent and drained — no longer blocked behind the (now quarantined, skipped) rigIncidents entry");
+
+    const sessionEntryAfter = await readRawOutboxEntry(page6, "sessions", "sess_legit_blocked");
+    check(!sessionEntryAfter, "the sessions entry is gone from the outbox — successfully drained, proving the queue is unblocked past the legacy orphan");
 
     if (failures > 0) console.error("\n--- preview server output (for debugging) ---\n" + serverOutput.slice(-4000));
   } finally {

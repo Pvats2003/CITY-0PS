@@ -148,6 +148,37 @@ const ASSIGNMENT_FO_UPDATE_FIELDS = new Set([
 ]);
 const RIG_INCIDENT_FO_UPDATE_FIELDS = new Set(["linkedIssueId"]);
 
+/** Detects the ONE specific poisoned shape a pre-11f4f9a build's
+ * reportRigIncident() could leave behind: outbox.ts's deterministic key
+ * (outbox:rigIncidents:<id>) meant that create's own full-record enqueue()
+ * was immediately clobbered by that same call's follow-up
+ * updateRigIncident(incident.id, { linkedIssueId }) — last write wins, by
+ * design (see keyFor()'s own comment) — leaving ONLY {linkedIssueId}
+ * durably queued, with no foId, for a document that was never actually
+ * created server-side. Firestore then evaluates any resend of it as a
+ * CREATE (the doc doesn't exist) and denies it (the create rule requires
+ * foId), and drainOutbox() blocks its entire queue behind that permanent
+ * denial forever.
+ *
+ * This shape cannot be produced by the current build: reportRigIncident()
+ * (src/engine/workflows.ts, since 11f4f9a) embeds linkedIssueId in the
+ * incident's own initial create payload and never calls
+ * updateRigIncident() afterward, and no other code path ever sets
+ * linkedIssueId at all (confirmed by inspection — the only other
+ * reference is src/lib/demo/generate.ts's demo-data seeding, which never
+ * goes through the outbox). So `data` being exactly `{ linkedIssueId }`
+ * and nothing else is unambiguous: it can only be this legacy artifact,
+ * never a legitimate patch a current session could have queued.
+ *
+ * Deliberately the narrowest possible predicate — exactly this one-key
+ * shape — rather than "any rigIncidents entry missing foId," which would
+ * also (wrongly) catch a genuine, currently-supported partial patch if one
+ * is ever added for a field other than linkedIssueId in the future. */
+function isLegacyRigIncidentLinkedIssueIdOrphan(data: Record<string, unknown>): boolean {
+  const keys = Object.keys(data);
+  return keys.length === 1 && keys[0] === "linkedIssueId";
+}
+
 /** One-time-per-startup pass for an FO session only, over any
  * ALREADY-QUEUED assignments/rigIncidents outbox entry that still carries
  * a full-record snapshot (enqueued by an older build, before field-scoped
@@ -206,6 +237,21 @@ async function quarantineStaleScopedOutboxEntries(): Promise<void> {
     const entries = await peekOutboxEntriesForCollection(collection);
     for (const entry of entries) {
       if (entry.data === null) continue; // a deletion tombstone — nothing to project, nothing stale about it
+
+      if (collection === "rigIncidents" && isLegacyRigIncidentLinkedIssueIdOrphan(entry.data)) {
+        // Checked BEFORE the generic hasExtraField test below: this exact
+        // shape has ZERO fields outside the allow-list (linkedIssueId IS
+        // the one allowed field), so the generic test alone would call it
+        // "already correctly scoped" and leave it to auto-drain forever
+        // into the same permission-denied. See
+        // isLegacyRigIncidentLinkedIssueIdOrphan()'s own comment for why
+        // this shape is unambiguous and unrecoverable — quarantine
+        // immediately, no recovered-intent check needed (no current code
+        // path ever produces this shape via a real mutation to recover).
+        await flagOutboxEntryNeedsManualReview(collection, entry.id);
+        continue;
+      }
+
       const hasExtraField = Object.keys(entry.data).some((field) => !allowed.has(field));
       if (!hasExtraField) continue; // already correctly scoped — safe to auto-drain as-is, leave untouched
 
