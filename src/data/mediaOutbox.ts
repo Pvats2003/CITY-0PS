@@ -47,6 +47,21 @@ export async function mediaOutboxDepth(): Promise<number> {
   return allKeys.filter((k) => typeof k === "string" && k.startsWith(KEY_PREFIX)).length;
 }
 
+/** Read-only diagnostic seam — every currently-queued media outbox entry,
+ * for outboxDiag.ts's production-safe queue snapshot. Never returns the raw
+ * `blob` field itself (see MediaOutboxEntry) to the caller's rendered
+ * output — callers must destructure only the metadata fields they need.
+ * Makes no writes, mutates nothing. */
+export async function peekMediaOutboxEntries(): Promise<MediaOutboxEntry[]> {
+  const allKeys = (await keys()).filter((k): k is string => typeof k === "string" && k.startsWith(KEY_PREFIX));
+  const entries: MediaOutboxEntry[] = [];
+  for (const key of allKeys) {
+    const entry = (await get(key)) as MediaOutboxEntry | undefined;
+    if (entry) entries.push(entry);
+  }
+  return entries;
+}
+
 /** Persists the raw file into IndexedDB immediately — durable the instant
  * this resolves, surviving a refresh or full browser restart even if the
  * upload itself hasn't started yet. Marks the file "uploading" locally so
@@ -92,6 +107,22 @@ function setFileUploadStatus(
       : f,
   );
   updateEvidence(evidenceId, { files });
+}
+
+declare global {
+  interface Window {
+    /** Test-only seam (mirrors __CITY_OPS_TEST_SET_FOS_DIAG__/
+     * __CITY_OPS_TEST_BACKEND__) — lets Playwright simulate a queued photo's
+     * Supabase upload finishing without a real Supabase project (never
+     * configured in the test environment — see isSupabaseConfigured()), by
+     * driving the exact same store mutation this file performs internally
+     * once uploadEvidenceFile() actually resolves. Inert for real users. */
+    __CITY_OPS_TEST_SET_FILE_UPLOAD_STATUS__?: typeof setFileUploadStatus;
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.__CITY_OPS_TEST_SET_FILE_UPLOAD_STATUS__ = setFileUploadStatus;
 }
 
 // Same overlapping-drain-calls guard as data/outbox.ts's drainOutbox(), for

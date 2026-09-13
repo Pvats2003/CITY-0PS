@@ -336,6 +336,16 @@ let applyingRemoteUpdate = false;
 // are unrestricted and never consult this set. Reset on resetSyncEngine()
 // the same as every other per-run tracking state below.
 const syncedEvidenceOnceIds = new Set<string>();
+
+/** Read-only diagnostic seam — has this evidence id already been durably
+ * enqueued to Firestore at least once this device has ever known about
+ * (persisted, see loadPersistedSyncedEvidenceIds below)? Used by
+ * outboxDiag.ts to classify a locally-held evidence record as
+ * synced/not-yet-synced without duplicating this module's own tracking
+ * state. Makes no writes, mutates nothing. */
+export function isEvidenceSyncedOnce(id: string): boolean {
+  return syncedEvidenceOnceIds.has(id);
+}
 // Every teardown function this run of the engine created — listener
 // unsubscribes, the local Zustand watcher, the `online` handler — so
 // resetSyncEngine() can cleanly stop ALL of them, not just flip the

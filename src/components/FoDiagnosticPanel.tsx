@@ -4,6 +4,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { useProfileDiag } from "@/auth/useProfileDiag";
 import { useFosDiag } from "@/data/useFosDiag";
 import { useAllFoSyncStatus } from "@/data/useAllFoSyncStatus";
+import { useOutboxDiag } from "@/data/useOutboxDiag";
 import { BUILD_SHA, BUILD_TIME } from "@/lib/buildInfo";
 import { Button } from "@/components/ui/button";
 import type { CollectionSyncState } from "@/data/useCollectionSyncStatus";
@@ -82,6 +83,7 @@ export function FoDiagnosticPanel({ requestedFoId, matchedFoId, matchedFoName, f
   const fosDiag = useFosDiag();
   const allSync = useAllFoSyncStatus();
   const failingCollections = allSync.filter((c) => c.status === "error");
+  const outboxDiag = useOutboxDiag();
   const projectId = useFirebaseProjectId();
   const [copied, setCopied] = useState(false);
 
@@ -170,6 +172,23 @@ export function FoDiagnosticPanel({ requestedFoId, matchedFoId, matchedFoName, f
       (c) =>
         `SYNC_${c.collection}=status:${c.status}` +
         (c.status === "error" ? ` errorCode:${c.errorCode} errorMessage:${displayValue(c.errorMessage)}` : ""),
+    ),
+    `OUTBOX_FIRESTORE_COUNT=${outboxDiag.firestoreEntries.length}`,
+    `OUTBOX_MEDIA_COUNT=${outboxDiag.mediaEntries.length}`,
+    `OUTBOX_PENDING_EVIDENCE_COUNT=${outboxDiag.pendingEvidence.length}`,
+    ...outboxDiag.firestoreEntries.map(
+      (e, i) =>
+        `OUTBOX_FS_${i + 1}=collection:${e.collection} id:${e.id} ` +
+        `${e.isDelete ? "op:delete" : `op:write fields:[${(e.fieldNames ?? []).join(",")}]`} ` +
+        `needsManualReview:${e.needsManualReview} queuedAt:${e.queuedAt} collectionErrorCode:${e.collectionErrorCode ?? "none"}`,
+    ),
+    ...outboxDiag.mediaEntries.map(
+      (e, i) => `OUTBOX_MEDIA_${i + 1}=evidenceId:${e.evidenceId} fileId:${e.fileId} fileName:${e.fileName} queuedAt:${e.queuedAt}`,
+    ),
+    ...outboxDiag.pendingEvidence.map(
+      (e, i) =>
+        `PENDING_EVIDENCE_${i + 1}=id:${e.id} type:${e.type} assignmentId:${e.assignmentId ?? "none"} ` +
+        `files:[${e.files.map((f) => `${f.fileId}:${f.uploadStatus ?? "none"}${f.uploadErrorCode ? `(${f.uploadErrorCode})` : ""}`).join(", ")}]`,
     ),
   ];
 
@@ -294,6 +313,41 @@ export function FoDiagnosticPanel({ requestedFoId, matchedFoId, matchedFoName, f
           ))}
         </>
       )}
+
+      <div className="h-px bg-border my-1.5" />
+      <div className="text-[10px] uppercase tracking-wide text-muted-2 mb-1">
+        Outbox queue (Firestore {outboxDiag.firestoreEntries.length} / media {outboxDiag.mediaEntries.length} / pending evidence{" "}
+        {outboxDiag.pendingEvidence.length})
+      </div>
+      {outboxDiag.firestoreEntries.map((e, i) => (
+        <div key={`fs-${e.collection}-${e.id}`} className="mb-1 pl-2 border-l-2 border-border">
+          <Row label={`FS #${i + 1} collection`} value={e.collection} />
+          <Row label={`FS #${i + 1} id`} value={e.id} />
+          <Row label={`FS #${i + 1} op`} value={e.isDelete ? "delete" : `write fields:[${(e.fieldNames ?? []).join(", ")}]`} />
+          <Row label={`FS #${i + 1} quarantined`} value={String(e.needsManualReview)} />
+          <Row label={`FS #${i + 1} queuedAt`} value={e.queuedAt} />
+          <Row label={`FS #${i + 1} collection error`} value={e.collectionErrorCode ?? "none"} />
+        </div>
+      ))}
+      {outboxDiag.mediaEntries.map((e, i) => (
+        <div key={`media-${e.evidenceId}-${e.fileId}`} className="mb-1 pl-2 border-l-2 border-border">
+          <Row label={`Media #${i + 1} evidenceId`} value={e.evidenceId} />
+          <Row label={`Media #${i + 1} fileId`} value={e.fileId} />
+          <Row label={`Media #${i + 1} fileName`} value={e.fileName} />
+          <Row label={`Media #${i + 1} queuedAt`} value={e.queuedAt} />
+        </div>
+      ))}
+      {outboxDiag.pendingEvidence.map((e, i) => (
+        <div key={`pending-ev-${e.id}`} className="mb-1 pl-2 border-l-2 border-critical/40">
+          <Row label={`Pending #${i + 1} id`} value={e.id} />
+          <Row label={`Pending #${i + 1} type`} value={e.type} />
+          <Row label={`Pending #${i + 1} assignmentId`} value={e.assignmentId ?? "none"} />
+          <Row
+            label={`Pending #${i + 1} files`}
+            value={e.files.map((f) => `${f.fileId}:${f.uploadStatus ?? "none"}${f.uploadErrorCode ? `(${f.uploadErrorCode})` : ""}`).join(", ") || "(no files)"}
+          />
+        </div>
+      ))}
 
       <Button variant="secondary" size="sm" onClick={() => void handleCopy()} className="w-full mt-2.5">
         {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
