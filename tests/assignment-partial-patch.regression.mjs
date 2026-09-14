@@ -471,12 +471,13 @@ async function main() {
     page2.on("pageerror", (err) => console.error("  [page error]", err.stack || err.message));
 
     await page2.goto(`${BASE_URL}/login`);
-    // Seed already "arrived" (actualArrivalAt set, no LOCATION evidence) so
-    // the ARRIVAL PHOTO screen is reachable, then also add enRouteAt via
-    // markEnRoute equivalent isn't reachable from this screen — instead
-    // seed at "assigned" stage so both "I'm on my way" AND "I'm at
-    // Location" are both clickable in quick succession without waiting on
-    // geolocation (mocked below).
+    // Seed at "assigned" stage (not yet arrived) so both "I'm on my way"
+    // AND "I'm at Location" are clickable in quick succession without
+    // waiting on geolocation (mocked below). This only exercises
+    // markEnRoute()/checkInAssignment()'s assignment-level patches
+    // (enRouteAt/actualArrivalAt) — it never reaches the LOCATION PHOTO
+    // capture step, so it's unaffected by captureLocationEvidence()'s
+    // files parameter.
     await page2.addInitScript(() => {
       // Deterministic, synchronous geolocation mock — avoids relying on a
       // real browser location permission prompt for this test.

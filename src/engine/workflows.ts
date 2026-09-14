@@ -283,20 +283,25 @@ export function markEnRoute(assignment: Assignment) {
 /** The app calculates verification — the FO never self-declares "arrived
  * and verified" (spec Phase 3). Creates a LOCATION evidence record with
  * the computed distance always attached, whether inside or outside the
- * threshold — a mismatch is evidence too, not a rejected submission. */
+ * threshold — a mismatch is evidence too, not a rejected submission.
+ * `files` carries the location photo the FO takes at this same step
+ * (durably stashed via stashPendingFile() before this is called, same as
+ * every other evidence capture) — LOCATION evidence is GPS verification
+ * AND the photo together in one record, never split across two. */
 export function captureLocationEvidence(
   assignment: Assignment,
   business: import("@/types").Business | undefined,
   lat: number,
   lng: number,
   accuracy?: number,
+  files: EvidenceFile[] = [],
 ) {
   const { logActivity } = useCity.getState();
   const check = checkLocation(business, lat, lng);
   const evidence = captureEvidence({
     assignment,
     type: "LOCATION",
-    files: [],
+    files,
     lat,
     lng,
     locationAccuracy: accuracy,

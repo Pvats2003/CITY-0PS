@@ -36,7 +36,7 @@ import {
 } from "@/engine/workflows";
 import { buildRigSummary, isDeployable, proposeRigReplacement } from "@/engine/rigGuardian";
 import { toDeployability } from "@/engine/rigTaxonomy";
-import { deriveExecutionStage, evidenceCompleteness, latestOfType, PRECHECK_ITEMS, INSTALLATION_ITEMS } from "@/engine/execution";
+import { deriveExecutionStage, evidenceCompleteness, latestOfType, checkLocation, PRECHECK_ITEMS, INSTALLATION_ITEMS } from "@/engine/execution";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
@@ -628,7 +628,12 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
   const [postCheckOpen, setPostCheckOpen] = useState(false);
   const [locBusy, setLocBusy] = useState(false);
   const [locError, setLocError] = useState<string | null>(null);
-  const [arrivalPhotos, setArrivalPhotos] = useState<EvidenceFile[]>([]);
+  // The GPS fix resolved by handleArrive(), held here rather than written
+  // straight to a LOCATION evidence record — creation is deferred until
+  // the FO also attaches the location photo below (evidence is
+  // append-only, so lat/lng and the photo must arrive in the same call).
+  const [locationFix, setLocationFix] = useState<{ lat: number; lng: number; accuracy?: number } | null>(null);
+  const [locationPhotos, setLocationPhotos] = useState<EvidenceFile[]>([]);
   const [precheckChecklist, setPrecheckChecklist] = useState<Record<string, boolean>>({});
   const [precheckPhotos, setPrecheckPhotos] = useState<EvidenceFile[]>([]);
   const [installPhotos, setInstallPhotos] = useState<EvidenceFile[]>([]);
@@ -657,13 +662,13 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
     setLocError(null);
     checkInAssignment(assignment);
     if (!navigator.geolocation) {
-      captureLocationEvidence(assignment, business, 0, 0);
+      setLocationFix({ lat: 0, lng: 0 });
       setLocBusy(false);
       return;
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        captureLocationEvidence(assignment, business, pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+        setLocationFix({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
         setLocBusy(false);
       },
       (err) => {
@@ -835,33 +840,39 @@ function ExecutionFlow({ assignment }: { assignment: Assignment }) {
   }
 
   if (stage === "arrived") {
-    const location = assignmentEvidence.filter((e) => e.type === "LOCATION").sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-    const verified = location?.metadata?.verified === true;
+    // LOCATION evidence doesn't exist yet at this stage by construction —
+    // its creation is deferred (see handleArrive()) until the location
+    // photo below is attached, so GPS + photo land in the same, single
+    // append-only evidence record. The verified/mismatch preview is
+    // computed live from the resolved fix, the same checkLocation() logic
+    // captureLocationEvidence() itself uses at submission time.
+    const fix = locationFix ?? { lat: 0, lng: 0 };
+    const preview = locationFix ? checkLocation(business, fix.lat, fix.lng) : null;
     return (
       <div className="p-4 space-y-4">
         <Section title="LOCATION">
-          {location ? (
-            <div className={cn("rounded-lg border p-3 text-sm flex items-center gap-2", verified ? "border-success/30 bg-success-bg text-success" : "border-warning/30 bg-warning-bg text-warning")}>
-              {verified ? <CheckCircle2 className="size-4 shrink-0" /> : <AlertTriangle className="size-4 shrink-0" />}
+          {preview ? (
+            <div className={cn("rounded-lg border p-3 text-sm flex items-center gap-2", preview.verified ? "border-success/30 bg-success-bg text-success" : "border-warning/30 bg-warning-bg text-warning")}>
+              {preview.verified ? <CheckCircle2 className="size-4 shrink-0" /> : <AlertTriangle className="size-4 shrink-0" />}
               <span>
-                {verified ? "LOCATION VERIFIED" : "LOCATION MISMATCH"} — {(location.metadata?.message as string) ?? "location recorded"}
+                {preview.verified ? "LOCATION VERIFIED" : "LOCATION MISMATCH"} — {preview.message}
               </span>
             </div>
           ) : (
             <div className="text-sm text-muted">Location captured.</div>
           )}
         </Section>
-        <Section title="ARRIVAL PHOTO">
-          <PhotoCapture label="Take arrival photo" files={arrivalPhotos} onChange={setArrivalPhotos} />
+        <Section title="LOCATION PHOTO">
+          <PhotoCapture label="Take location photo" files={locationPhotos} onChange={setLocationPhotos} />
         </Section>
         <Button
           size="lg"
           className="w-full h-14 text-base"
-          disabled={arrivalPhotos.length === 0}
+          disabled={locationPhotos.length === 0}
           onClick={() => {
             if (submittingArrivalRef.current) return;
             submittingArrivalRef.current = true;
-            captureStepEvidence(assignment, "ARRIVAL", arrivalPhotos);
+            captureLocationEvidence(assignment, business, fix.lat, fix.lng, fix.accuracy, locationPhotos);
           }}
         >
           Continue to Rig Precheck

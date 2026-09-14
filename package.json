@@ -25,7 +25,8 @@
     "test:assignment-partial-patch": "node tests/assignment-partial-patch.regression.mjs",
     "test:installation-evidence-sync": "node tests/installation-evidence-sync.regression.mjs",
     "test:media-upload-concurrency": "node tests/media-upload-concurrency.regression.mjs",
-    "test:multi-rig-business": "node tests/multi-rig-business.regression.mjs"
+    "test:multi-rig-business": "node tests/multi-rig-business.regression.mjs",
+    "test:location-evidence-photo": "node tests/location-evidence-photo.regression.mjs"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.11",

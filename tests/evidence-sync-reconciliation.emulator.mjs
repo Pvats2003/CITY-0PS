@@ -343,11 +343,14 @@ async function runEmulatorSuite() {
 }
 
 // -------------------------------------------------------------------------
-// [G] Arrival duplicate-submit: real browser, real production build. Proves
-// the missing submittingArrivalRef guard fix — a rapid double-tap of
-// "Continue to Rig Precheck" must produce exactly one ARRIVAL evidence
-// record, matching the existing Precheck/Installation/Completion guards'
-// proven behavior.
+// [G] Location-photo duplicate-submit: real browser, real production build.
+// Proves the submittingArrivalRef guard still holds on the "arrived" stage's
+// submit button after the LOCATION-evidence-photo fix (captureLocationEvidence
+// now takes the photo directly, replacing the old separate ARRIVAL capture
+// this button used to submit — see src/pages/FOExecution.tsx) — a rapid
+// double-tap of "Continue to Rig Precheck" must produce exactly one LOCATION
+// evidence record, matching the existing Precheck/Installation/Completion
+// guards' proven behavior.
 // -------------------------------------------------------------------------
 
 const ONE_PX_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -397,7 +400,7 @@ async function seedArrivalScenario(page) {
 }
 
 async function runArrivalDoubleSubmitTest() {
-  console.log("\n[G] Building production bundle and driving the real ARRIVAL screen...");
+  console.log("\n[G] Building production bundle and driving the real LOCATION (arrived-stage) screen...");
   await new Promise((resolve, reject) => {
     const build = spawn("npm", ["run", "build"], { cwd: process.cwd(), stdio: "inherit" });
     build.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`build failed with code ${code}`))));
@@ -421,7 +424,7 @@ async function runArrivalDoubleSubmitTest() {
     await page.goto(`${BASE_URL}/fo`);
     await page.waitForSelector("text=Test Biz", { timeout: 15000 });
     await page.click("text=Test Biz");
-    await page.waitForSelector("text=ARRIVAL PHOTO", { timeout: 15000 });
+    await page.waitForSelector("text=LOCATION PHOTO", { timeout: 15000 });
 
     const arrivalFileInput = page.locator('input[type="file"]').first();
     await arrivalFileInput.setInputFiles({ name: "arrival.png", mimeType: "image/png", buffer: Buffer.from(ONE_PX_PNG_BASE64, "base64") });
@@ -439,8 +442,8 @@ async function runArrivalDoubleSubmitTest() {
       const raw = localStorage.getItem("city-ops-os");
       return raw ? JSON.parse(raw).state : null;
     });
-    const arrivalRecords = (cityData?.evidence ?? []).filter((e) => e.type === "ARRIVAL");
-    check(arrivalRecords.length === 1, `exactly one ARRIVAL evidence record exists after a rapid double-tap (got: ${arrivalRecords.length}) — submittingArrivalRef guard fix`);
+    const arrivalRecords = (cityData?.evidence ?? []).filter((e) => e.type === "LOCATION");
+    check(arrivalRecords.length === 1, `exactly one LOCATION evidence record exists after a rapid double-tap (got: ${arrivalRecords.length}) — submittingArrivalRef guard still holds after the location-photo fix`);
 
     if (failures > 0) console.error("\n--- preview server output (for debugging) ---\n" + serverOutput.slice(-4000));
   } finally {
