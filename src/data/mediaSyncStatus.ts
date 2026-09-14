@@ -85,6 +85,8 @@ export function describeStorageErrorForFO(code: string): string {
     case "storage/retry-limit-exceeded":
     case "network-error":
       return "Photo upload couldn't connect. Check your internet connection and retry.";
+    case "upload-timeout":
+      return "Photo upload timed out. It will be retried when the connection is available.";
     default:
       return "Photo upload failed. Retry or contact your Manager.";
   }

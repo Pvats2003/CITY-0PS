@@ -29,6 +29,17 @@ export interface MediaOutboxEntry {
 const MEDIA_OUTBOX_CHANGE_EVENT = "city-ops-media-outbox-change";
 const KEY_PREFIX = "mediaOutbox:";
 
+/** Bound on a single upload ATTEMPT (see withUploadTimeout() below) — not on
+ * the whole drain pass, and not a retry-count limit. Chosen as a generous
+ * allowance for a genuinely slow mobile upload while still being short
+ * enough that a request that will truly never resolve (round 4c's confirmed
+ * production root cause — no timeout anywhere in this path previously)
+ * doesn't block this device's entire media queue, including completely
+ * unrelated evidence, indefinitely. Overridable only by the test-only
+ * __CITY_OPS_TEST_UPLOAD_TIMEOUT_MS__ seam below — production always uses
+ * this exact value. */
+const UPLOAD_TIMEOUT_MS = 30_000;
+
 function keyFor(evidenceId: string, fileId: string): string {
   return `${KEY_PREFIX}${evidenceId}:${fileId}`;
 }
@@ -69,9 +80,12 @@ export async function peekMediaOutboxEntries(): Promise<MediaOutboxEntry[]> {
  *
  * A no-op in demo mode (no Supabase configured): there is no bucket to
  * upload to, so the file stays "local_only" exactly as it always has —
- * no wasted IndexedDB writes, no doomed-to-fail retry loop. */
+ * no wasted IndexedDB writes, no doomed-to-fail retry loop. Also proceeds
+ * when the test-only __CITY_OPS_TEST_UPLOAD_EVIDENCE_FILE__ seam is present
+ * (see below), so Playwright can exercise this real queue/concurrency logic
+ * without a live Supabase project. */
 export async function enqueueMediaUpload(entry: Omit<MediaOutboxEntry, "queuedAt">): Promise<void> {
-  if (!isSupabaseConfigured()) return;
+  if (!isSupabaseConfigured() && !window.__CITY_OPS_TEST_UPLOAD_EVIDENCE_FILE__) return;
   await set(keyFor(entry.evidenceId, entry.fileId), { ...entry, queuedAt: new Date().toISOString() } satisfies MediaOutboxEntry);
   setFileUploadStatus(entry.evidenceId, entry.fileId, { uploadStatus: "uploading" });
   notifyChange();
@@ -118,11 +132,64 @@ declare global {
      * driving the exact same store mutation this file performs internally
      * once uploadEvidenceFile() actually resolves. Inert for real users. */
     __CITY_OPS_TEST_SET_FILE_UPLOAD_STATUS__?: typeof setFileUploadStatus;
+    /** Test-only seam (mirrors __CITY_OPS_TEST_BACKEND__) — when present,
+     * drainMediaOutbox() calls THIS instead of the real uploadEvidenceFile()
+     * (mediaStorage.ts), and enqueueMediaUpload() treats it the same as
+     * Supabase being configured. Lets Playwright exercise the REAL
+     * concurrency/queue/retry logic in this file (multiple simultaneous
+     * uploads, a delayed one, a failed one) deterministically, without a
+     * live Supabase project or real Firebase Auth session — neither of
+     * which exist in this test environment. Inert for real users: nothing
+     * in the shipped app ever sets this. */
+    __CITY_OPS_TEST_UPLOAD_EVIDENCE_FILE__?: typeof uploadEvidenceFile;
+    /** Test-only seam — overrides UPLOAD_TIMEOUT_MS for withUploadTimeout()
+     * below, so Playwright can prove the timeout behavior without a real
+     * 30-second wait. Never set by the shipped app; production always uses
+     * the real UPLOAD_TIMEOUT_MS regardless of whether this key exists on
+     * `window` (a real user's browser never sets it). */
+    __CITY_OPS_TEST_UPLOAD_TIMEOUT_MS__?: number;
   }
 }
 
 if (typeof window !== "undefined") {
   window.__CITY_OPS_TEST_SET_FILE_UPLOAD_STATUS__ = setFileUploadStatus;
+}
+
+/** Bounds one upload attempt so a request that never settles (no timeout
+ * exists anywhere in the underlying fetch()/Supabase storage-js call chain)
+ * can't stall this function's caller — and therefore this device's entire
+ * sequential media-outbox drain, including completely unrelated evidence —
+ * forever. Confirmed production root cause, round 4c.
+ *
+ * On timeout, rejects with a distinct, machine-readable `.code ===
+ * "upload-timeout"` (see mediaSyncStatus.ts's classifyStorageError(), which
+ * already forwards any `err.code` verbatim) so it flows through the EXACT
+ * SAME error path as a genuine Storage rejection below — recorded via
+ * reportMediaSyncError(), marked upload_failed (never silently "uploaded",
+ * never deleted from the outbox), and retryable exactly like any other
+ * failure. No new error/status architecture is introduced.
+ *
+ * The original `promise` is never abandoned: if it wins the race normally
+ * this is a no-op wrapper; if the timeout wins first, a trailing `.catch()`
+ * is still attached so a LATE rejection from the original upload can never
+ * surface as an unhandled promise rejection, and the pending timer is
+ * always cleared via `finally` regardless of which side wins. */
+function withUploadTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  promise.catch(() => {
+    // Intentionally swallowed — see doc comment above. The real outcome
+    // (success or failure) was already decided by whichever side of the
+    // race below settled first; this only exists to prevent an unhandled
+    // rejection if `promise` loses the race and then rejects later.
+  });
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error("Photo upload timed out.");
+      (err as Error & { code: string }).code = "upload-timeout";
+      reject(err);
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 // Same overlapping-drain-calls guard as data/outbox.ts's drainOutbox(), for
@@ -162,25 +229,30 @@ export async function drainMediaOutbox(): Promise<void> {
   }
   draining = true;
   try {
-    if (!isSupabaseConfigured() || !navigator.onLine) return;
+    if ((!isSupabaseConfigured() && !window.__CITY_OPS_TEST_UPLOAD_EVIDENCE_FILE__) || !navigator.onLine) return;
     const allKeys = (await keys()).filter((k): k is string => typeof k === "string" && k.startsWith(KEY_PREFIX));
     for (const key of allKeys) {
       const entry = (await get(key)) as MediaOutboxEntry | undefined;
       if (!entry) continue;
       setFileUploadStatus(entry.evidenceId, entry.fileId, { uploadStatus: "uploading" });
       try {
-        const uploaded = await uploadEvidenceFile({
-          // entry.foId is intentionally NOT passed — uploadEvidenceFile()
-          // derives the Storage path's ownership segment solely from the
-          // currently authenticated Firebase user (see mediaStorage.ts's
-          // currentUploaderUid()), never from a caller-supplied value.
-          assignmentId: entry.assignmentId,
-          evidenceId: entry.evidenceId,
-          fileId: entry.fileId,
-          fileName: entry.fileName,
-          mimeType: entry.mimeType,
-          blob: entry.blob,
-        });
+        const upload = window.__CITY_OPS_TEST_UPLOAD_EVIDENCE_FILE__ ?? uploadEvidenceFile;
+        const timeoutMs = window.__CITY_OPS_TEST_UPLOAD_TIMEOUT_MS__ ?? UPLOAD_TIMEOUT_MS;
+        const uploaded = await withUploadTimeout(
+          upload({
+            // entry.foId is intentionally NOT passed — uploadEvidenceFile()
+            // derives the Storage path's ownership segment solely from the
+            // currently authenticated Firebase user (see mediaStorage.ts's
+            // currentUploaderUid()), never from a caller-supplied value.
+            assignmentId: entry.assignmentId,
+            evidenceId: entry.evidenceId,
+            fileId: entry.fileId,
+            fileName: entry.fileName,
+            mimeType: entry.mimeType,
+            blob: entry.blob,
+          }),
+          timeoutMs,
+        );
         // Local "uploaded" status (with its real storagePath) is written
         // FIRST, and only then is the outbox entry removed. If the process
         // is interrupted between these two statements (reload, background,
