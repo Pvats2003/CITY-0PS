@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, ImageOff, UploadCloud, CloudCheck, CloudAlert } from "lucide-react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, ImageOff, UploadCloud, CloudCheck, CloudAlert, X } from "lucide-react";
+import { Dialog, DialogContent, DialogClose, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -75,6 +75,7 @@ export function EvidenceThumb({
   file,
   onRetry,
   showTechnicalDetail,
+  onExpand,
 }: {
   file: EvidenceFile;
   /** Present only on FO-facing surfaces where a failed upload can be
@@ -85,6 +86,11 @@ export function EvidenceThumb({
   /** Manager/debug surfaces only — appends the raw Firebase error code to
    * the tooltip. Never set this from FO-facing code. */
   showTechnicalDetail?: boolean;
+  /** Manager Evidence Review only — opens this exact thumbnail's already-
+   * resolved display src (the same signed/download/local URL the
+   * thumbnail itself renders, never re-fetched or re-derived) in a full-
+   * size lightbox. Omit on FO-facing surfaces — no lightbox there. */
+  onExpand?: (src: string, alt: string) => void;
 }) {
   const [broken, setBroken] = useState(false);
   const src = useEvidenceDisplaySrc(file);
@@ -96,7 +102,18 @@ export function EvidenceThumb({
   return (
     <div className="relative">
       {!broken ? (
-        <img key={src} src={src} alt={file.name} onError={() => setBroken(true)} className="size-16 rounded-md object-cover border border-border" />
+        onExpand && src ? (
+          <button
+            type="button"
+            onClick={() => onExpand(src, file.name)}
+            className="block rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            aria-label={`View ${file.name} full size`}
+          >
+            <img key={src} src={src} alt={file.name} onError={() => setBroken(true)} className="size-16 rounded-md object-cover border border-border" />
+          </button>
+        ) : (
+          <img key={src} src={src} alt={file.name} onError={() => setBroken(true)} className="size-16 rounded-md object-cover border border-border" />
+        )
       ) : (
         <div className="size-16 rounded-md border border-border bg-surface-2 flex flex-col items-center justify-center gap-1 text-muted-2">
           <ImageOff className="size-4" />
@@ -144,6 +161,12 @@ export function EvidenceReviewDialog({ open, onOpenChange, assignmentId }: Props
   const [recheckTarget, setRecheckTarget] = useState<Evidence | null>(null);
   const [recheckNote, setRecheckNote] = useState("");
   const [assignmentNote, setAssignmentNote] = useState("");
+  // The full-size photo viewer's target — the thumbnail's OWN already-
+  // resolved src (never re-derived), so the lightbox always shows exactly
+  // what the thumbnail showed. A separate Dialog instance (stacked over
+  // this one via Radix's portal + DismissableLayer stack), so Escape/
+  // backdrop-click closes only the lightbox, never Evidence Review itself.
+  const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
 
   const assignment = data.assignments.find((a) => a.id === assignmentId);
   const business = data.businesses.find((b) => b.id === assignment?.businessId);
@@ -164,6 +187,7 @@ export function EvidenceReviewDialog({ open, onOpenChange, assignmentId }: Props
   const hours = (new Date(assignment.plannedEnd).getTime() - new Date(assignment.plannedStart).getTime()) / 3_600_000;
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
@@ -213,7 +237,7 @@ export function EvidenceReviewDialog({ open, onOpenChange, assignmentId }: Props
                 {e.files.length > 0 ? (
                   <div className="flex flex-wrap gap-1.5">
                     {e.files.map((f) => (
-                      <EvidenceThumb key={f.id} file={f} showTechnicalDetail />
+                      <EvidenceThumb key={f.id} file={f} showTechnicalDetail onExpand={(src, alt) => setLightbox({ src, alt })} />
                     ))}
                   </div>
                 ) : (
@@ -321,5 +345,27 @@ export function EvidenceReviewDialog({ open, onOpenChange, assignmentId }: Props
         )}
       </DialogContent>
     </Dialog>
+
+    {/* Full-size photo lightbox — a separate, stacked Dialog instance so
+        Escape/backdrop-click closes only the photo, never Evidence Review
+        itself (Radix's DismissableLayer stack scopes both to the topmost
+        open Dialog). Renders the exact src EvidenceThumb already resolved
+        and passed via onExpand — never a second fetch or a new URL. */}
+    <Dialog open={lightbox != null} onOpenChange={(v) => !v && setLightbox(null)}>
+      <DialogContent
+        showClose={false}
+        className="max-w-[95vw] w-auto max-h-[90vh] p-0 border-0 bg-transparent shadow-none overflow-visible grid place-items-center"
+      >
+        <DialogTitle className="sr-only">{lightbox ? `Evidence photo: ${lightbox.alt}` : "Evidence photo"}</DialogTitle>
+        {lightbox && <img src={lightbox.src} alt={lightbox.alt} className="max-w-[95vw] max-h-[90vh] w-auto h-auto object-contain rounded-md" />}
+        <DialogClose
+          aria-label="Close photo viewer"
+          className="absolute right-3 top-3 flex items-center justify-center size-9 rounded-full bg-black/60 text-white hover:bg-black/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+        >
+          <X className="size-5" />
+        </DialogClose>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
