@@ -460,7 +460,12 @@ export function reviewAssignment(assignment: Assignment, decision: AssignmentRev
 /** Manager rejects or requests a recheck on ONE specific evidence record —
  * the record itself is never deleted or overwritten (append-only, spec
  * Phase 15); the FO's replacement submission is a new Evidence with
- * replacesEvidenceId set (see captureStepEvidence). */
+ * replacesEvidenceId set (see captureStepEvidence). Deciding on one
+ * evidence item never itself sets assignment.reviewStatus (only
+ * reviewAssignment() does that) — recalculateAssignmentReviewStatus()
+ * below is what keeps the two in sync afterward, so every evidence-level
+ * decision funnels through the one place that can release a stale
+ * recheck_requested gate once it's actually resolved. */
 export function reviewEvidence(evidence: Evidence, decision: "approved" | "rejected" | "recheck_requested", reviewedBy: string, note?: string) {
   const { updateEvidence, logActivity } = useCity.getState();
   const now = nowISO();
@@ -477,6 +482,58 @@ export function reviewEvidence(evidence: Evidence, decision: "approved" | "rejec
       detail: note,
     });
   }
+  if (evidence.assignmentId) recalculateAssignmentReviewStatus(evidence.assignmentId);
+}
+
+/** Walks a resubmission chain (original -> replacement -> replacement's own
+ * replacement, ...) to the newest record in it. A replacement is only ever
+ * created in direct response to a recheck request (captureStepEvidence()'s
+ * replacesEvidenceId), so this is the one evidence record that actually
+ * reflects whether the Manager's concern has been addressed. */
+function latestInLineage(assignmentEvidence: Evidence[], id: string): Evidence {
+  let latest = assignmentEvidence.find((e) => e.id === id)!;
+  let next = assignmentEvidence.find((e) => e.replacesEvidenceId === latest.id);
+  while (next) {
+    latest = next;
+    next = assignmentEvidence.find((e) => e.replacesEvidenceId === latest.id);
+  }
+  return latest;
+}
+
+/** Recomputes assignment.reviewStatus from the assignment's OWN evidence —
+ * the source of truth deriveExecutionStage() reads to gate FO execution
+ * (see FOExecution.tsx's ACTION REQUIRED / RESUBMITTED screens). Approving
+ * or rejecting one evidence item never directly touches
+ * assignment.reviewStatus; this is what keeps it in sync, called from the
+ * one place (reviewEvidence(), above) every such decision funnels through.
+ *
+ * A no-op unless the assignment is currently "recheck_requested" — this
+ * never invents a new reviewStatus value and never touches an assignment
+ * that isn't already gated. Only clears the gate once EVERY evidence
+ * lineage the Manager ever flagged has a latest record that's "approved"
+ * — one approved replacement does not, by itself, clear the assignment if
+ * another flagged item is still unresolved (still awaiting the FO's
+ * resubmission, still awaiting the Manager's own decision on a
+ * resubmission, or was itself rejected) — preserving the invariant that
+ * approving one evidence item must never approve an assignment whose
+ * other required evidence is still missing or unapproved. Once cleared,
+ * reviewStatus goes back to "pending" (never "approved" — that stays a
+ * deliberate, separate Manager action via reviewAssignment()), so
+ * deriveExecutionStage() falls through to its normal, evidence-driven
+ * stage derivation, which still correctly gates on whatever's genuinely
+ * missing next (installation, session, completion, ...) independent of
+ * this flag. */
+export function recalculateAssignmentReviewStatus(assignmentId: string) {
+  const { assignments, evidence, updateAssignment } = useCity.getState();
+  const assignment = assignments.find((a) => a.id === assignmentId);
+  if (!assignment || assignment.reviewStatus !== "recheck_requested") return;
+
+  const assignmentEvidence = evidence.filter((e) => e.assignmentId === assignmentId);
+  const flaggedRoots = assignmentEvidence.filter((e) => e.status === "recheck_requested");
+  const stillUnresolved = flaggedRoots.some((root) => latestInLineage(assignmentEvidence, root.id).status !== "approved");
+  if (stillUnresolved) return;
+
+  updateAssignment(assignmentId, { reviewStatus: "pending" });
 }
 
 // ---------------------------------------------------------------------------
