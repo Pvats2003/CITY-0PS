@@ -121,7 +121,14 @@ export function AssignmentFormDialog({ open, onOpenChange, date, existingAssignm
     }
 
     const active = existingAssignments.filter((a) => a.status !== "cancelled" && a.status !== "rejected");
-    const foConflict = active.find((a) => a.foId === foId && overlaps(a.plannedStart, a.plannedEnd, plannedStart, plannedEnd));
+    // Same business, same FO, overlapping time is a legitimate multi-rig
+    // deployment (one FO running several rigs at one business visit), not a
+    // double-booking — only flag the FO as conflicted when the overlap is
+    // against a *different* business. Rig-level double-booking is still
+    // caught separately below (rigConflict), regardless of business.
+    const foConflict = active.find(
+      (a) => a.foId === foId && a.businessId !== businessId && overlaps(a.plannedStart, a.plannedEnd, plannedStart, plannedEnd),
+    );
     if (foConflict) return setError(`${fo.name} already has an overlapping assignment at this time.`);
     if (rigId) {
       const rigConflict = active.find((a) => a.rigId === rigId && overlaps(a.plannedStart, a.plannedEnd, plannedStart, plannedEnd));

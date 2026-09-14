@@ -29,7 +29,12 @@ export function detectConflicts(assignments: Assignment[], data: CityData, date:
     for (let j = i + 1; j < active.length; j++) {
       const a = active[i];
       const b = active[j];
-      if (a.foId === b.foId && overlaps(a.plannedStart, a.plannedEnd, b.plannedStart, b.plannedEnd)) {
+      // Same business, same FO, overlapping time is a legitimate multi-rig
+      // deployment (one FO running several rigs at one business visit), not
+      // a double-booking — only flag it when the overlap spans two
+      // *different* businesses. Rig-level double-booking (below) is still
+      // caught regardless of business.
+      if (a.foId === b.foId && a.businessId !== b.businessId && overlaps(a.plannedStart, a.plannedEnd, b.plannedStart, b.plannedEnd)) {
         conflicts.push({
           id: id("cf"),
           type: "fo_double_booking",

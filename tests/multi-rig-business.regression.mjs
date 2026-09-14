@@ -1,36 +1,44 @@
-// Investigation regression test: "a single business can have multiple
-// workers and multiple rigs operating simultaneously under ONE Field
-// Officer" (e.g. ABC Motors: 4 workers, 4 rigs, 1 FO, 40 required recording
-// hours). This file drives the REAL app UI (real AssignmentFormDialog, real
-// FOExecution Today's Plan) via Playwright against a production build,
-// using the established __CITY_OPS_TEST_BACKEND__ seam — no live Firebase
-// project needed.
+// Regression test: "a single business can have multiple workers and
+// multiple rigs operating simultaneously under ONE Field Officer" (e.g. ABC
+// Motors: 4 workers, 4 rigs, 1 FO, 40 required recording hours). This file
+// drives the REAL app UI (real AssignmentFormDialog, real /today Planner
+// conflict banner, real FOExecution Today's Plan) via Playwright against a
+// production build, using the established __CITY_OPS_TEST_BACKEND__ seam —
+// no live Firebase project needed.
 //
-// Two scenarios:
+// Background: the underlying data model (src/lib/assignmentIdentity.ts,
+// store/city.ts's addAssignment(), engine/insights.ts's
+// businessTargetHoursFromAssignments(), per-assignment Evidence scoping)
+// already supported multiple rigs at one business under one FO. The actual
+// restriction was two "FO double-booking" conflict checks that didn't
+// exclude same-business overlaps:
+//   - src/components/forms/AssignmentFormDialog.tsx's `foConflict` check
+//   - src/engine/planner.ts's `detectConflicts()` `fo_double_booking` check
+// Both were fixed by adding a same-business exclusion, leaving the sibling
+// `rigConflict`/`rig_double_booking` checks (same rig, any business) and
+// everything else in the data/UI layers untouched.
 //
-// [1] PROVES THE ACTUAL RESTRICTION — src/components/forms/
-//     AssignmentFormDialog.tsx's `foConflict` check (line ~124) flags ANY
-//     time-overlapping assignment for the same FO as a blocking validation
-//     error, regardless of business. It does not exclude the case where
-//     both assignments are for the SAME business (a legitimate multi-rig
-//     deployment) — only the case of the SAME rig (which is correctly
-//     still blocked). This scenario documents that CURRENT, unfixed
-//     behavior: adding a second rig for the same business/FO/time is
-//     rejected by the dialog with "already has an overlapping assignment
-//     at this time," even though the underlying data model has no such
-//     restriction (see scenario [2]).
+// Three scenarios:
 //
-// [2] PROVES THE UNDERLYING DATA MODEL ALREADY SUPPORTS THE SCENARIO —
-//     bypassing the dialog (seeding assignments directly, computing their
-//     ids via the SAME deriveAssignmentId() algorithm src/lib/
-//     assignmentIdentity.ts uses — mirrored here in plain JS, same
-//     convention as this repo's *.emulator.mjs tests), this proves: four
-//     distinct rigId assignments for the same business+FO+date+time
-//     produce four distinct, non-colliding ids; required hours scale as
-//     rigs × 10 (src/engine/insights.ts's businessTargetHoursFromAssignments,
-//     NOT a hardcoded 10h/business); FO Today lists all four as separate,
-//     independently-executable cards; and evidence/session/completion
-//     state stays isolated per assignment (never merged by business).
+// [1] POSITIVE + NEGATIVE, THROUGH THE REAL UI — drives
+//     AssignmentFormDialog directly to create four rig assignments for the
+//     SAME business+FO+time window (proves the fix), then exercises the two
+//     conflicts that must still be blocked: a different business at an
+//     overlapping FO time, and the same rig at an overlapping time.
+//
+// [2] DOWNSTREAM STATE — using the assignments actually created in [1] (no
+//     re-seeding), verifies required hours scale to rigs × 10, FO Today
+//     lists all four independently, and completion/evidence state stays
+//     isolated per assignment (never merged/leaked by business).
+//
+// [3] PLANNER CONFLICT DETECTION — seeds a small conflict matrix directly
+//     (bypassing the dialog, since the dialog now prevents these exact
+//     conflicting records from ever being created) and reads the real
+//     /today page's conflict banner (backed by planner.ts's
+//     detectConflicts()) to prove: same-business/different-rig/overlapping
+//     time produces NO conflict; different-business/same-FO/overlapping
+//     time produces fo_double_booking; same-rig/overlapping time produces
+//     rig_double_booking regardless of business.
 //
 // Run with: npm run test:multi-rig-business
 
@@ -159,10 +167,10 @@ async function main() {
   try {
     await waitForServer();
 
-    // ------------------------------------------------------------------
+    // ==================================================================
     console.log(
-      "\n[1] THE RESTRICTION: driving the REAL Manager UI — one FO, one business, two rigs — to add a Rig 1 assignment, " +
-        "then attempt to add a Rig 2 assignment for the SAME business/FO at the SAME time window:",
+      "\n[1] THROUGH THE REAL UI: one FO, business ABC Motors with 4 rigs at the SAME time window, " +
+        "plus the two conflicts that must still be blocked (different business, and same rig):",
     );
     const context1 = await browser.newContext();
     const page1 = await context1.newPage();
@@ -186,16 +194,21 @@ async function main() {
     await sleep(800);
 
     await page1.click('a[href="/businesses"]');
-    await page1.getByRole("button", { name: "Add Business" }).first().click();
-    dialog = page1.locator('[role="dialog"]');
-    await dialog.locator("#biz-name").fill("ABC Motors");
-    await dialog.locator("#biz-area").fill("Test Area");
-    await dialog.getByRole("button", { name: "Add business", exact: true }).click();
-    await page1.waitForSelector('[role="dialog"]', { state: "hidden", timeout: 15000 }).catch(() => {});
-    await sleep(800);
+    for (const [name, area] of [
+      ["ABC Motors", "Test Area"],
+      ["XYZ Corp", "Other Area"],
+    ]) {
+      await page1.getByRole("button", { name: "Add Business" }).first().click();
+      dialog = page1.locator('[role="dialog"]');
+      await dialog.locator("#biz-name").fill(name);
+      await dialog.locator("#biz-area").fill(area);
+      await dialog.getByRole("button", { name: "Add business", exact: true }).click();
+      await page1.waitForSelector('[role="dialog"]', { state: "hidden", timeout: 15000 }).catch(() => {});
+      await sleep(800);
+    }
 
     await page1.click('a[href="/fleet"]');
-    for (const code of ["R-01", "R-02"]) {
+    for (const code of ["R-01", "R-02", "R-03", "R-04", "R-05"]) {
       await page1.getByRole("button", { name: "Add Rig" }).first().click();
       dialog = page1.locator('[role="dialog"]');
       await dialog.locator("#rig-code").fill(code);
@@ -212,100 +225,117 @@ async function main() {
     await page1.click('a[href^="/field-officers/"]');
     await page1.waitForSelector("text=Assign rig", { timeout: 15000 });
 
-    async function assignRig(rigCode, { expectError } = {}) {
+    async function assignRig(business, rigCode, { start = "09:00", end = "19:00", expectError } = {}) {
       await page1.getByRole("button", { name: "Assign rig" }).click();
       const d = page1.locator('[role="dialog"]');
       await d.locator("text=Select business").waitFor({ timeout: 15000 }).catch(() => {});
-      // Business combobox (index 1: FO=0, Business=1, Rig=2)
+      // Business combobox (index 1: FO=0 pre-filled, Business=1, Rig=2)
       await d.getByRole("combobox").nth(1).click();
-      await page1.locator('[role="option"]:has-text("ABC Motors")').click();
+      await page1.locator(`[role="option"]:has-text("${business}")`).click();
       // Rig combobox
       await d.getByRole("combobox").nth(2).click();
       await page1.locator(`[role="option"]:has-text("${rigCode}")`).click();
-      await d.locator("#asg-start").fill("09:00");
-      await d.locator("#asg-end").fill("19:00");
+      await d.locator("#asg-start").fill(start);
+      await d.locator("#asg-end").fill(end);
       await d.getByRole("button", { name: "Add assignment", exact: true }).click();
       await sleep(800);
       if (expectError) {
-        const errorText = await d.locator("text=already has an overlapping assignment").isVisible().catch(() => false);
-        return { dialogStillOpen: await d.isVisible().catch(() => false), errorVisible: errorText };
+        const errorMessage = await d.locator(".text-critical").first().textContent().catch(() => "");
+        const dialogStillOpen = await d.isVisible().catch(() => false);
+        // Close the dialog via Cancel so the NEXT assignRig() call can find
+        // the "Assign rig" button again (it's obstructed by this modal).
+        await d.getByRole("button", { name: "Cancel", exact: true }).click().catch(() => {});
+        await page1.waitForSelector('[role="dialog"]', { state: "hidden", timeout: 15000 }).catch(() => {});
+        return { dialogStillOpen, errorMessage: errorMessage ?? "" };
       }
       await page1.waitForSelector('[role="dialog"]', { state: "hidden", timeout: 15000 }).catch(() => {});
       return { dialogStillOpen: await d.isVisible().catch(() => false) };
     }
 
-    const rig1Result = await assignRig("R-01");
-    check(!rig1Result.dialogStillOpen, "Rig R-01 assignment (09:00-19:00, ABC Motors) is accepted — dialog closes normally");
+    console.log("\n  Positive: four rigs, same business, same FO, same 09:00-19:00 window:");
+    const rig1 = await assignRig("ABC Motors", "R-01");
+    check(!rig1.dialogStillOpen, "(A) Rig R-01 → ABC Motors accepted — dialog closes normally");
+    const rig2 = await assignRig("ABC Motors", "R-02");
+    check(!rig2.dialogStillOpen, "(B)(C)(E) Rig R-02 → SAME business/FO/time as R-01 is accepted (THE FIX: no longer blocked as an FO double-booking)");
+    const rig3 = await assignRig("ABC Motors", "R-03");
+    check(!rig3.dialogStillOpen, "(C) Rig R-03 → SAME business/FO/time is accepted");
+    const rig4 = await assignRig("ABC Motors", "R-04");
+    check(!rig4.dialogStillOpen, "(C) Rig R-04 → SAME business/FO/time is accepted");
 
-    const rig2Result = await assignRig("R-02", { expectError: true });
-    console.log(
-      `  OBSERVED: after attempting Rig R-02 for the SAME business/FO/time window, dialog still open=${rig2Result.dialogStillOpen}, ` +
-        `"already has an overlapping assignment" error visible=${rig2Result.errorVisible}`,
+    const mockStoreAfterPositive = await page1.evaluate(() => JSON.parse(localStorage.getItem("__mock_firestore_store__") || "{}"));
+    const bizList = Object.values(mockStoreAfterPositive.businesses ?? {});
+    const abcBizId = bizList.find((b) => b.name === "ABC Motors")?.id;
+    const xyzBizId = bizList.find((b) => b.name === "XYZ Corp")?.id;
+    const rigList = Object.values(mockStoreAfterPositive.rigs ?? {});
+    const rigCodeById = Object.fromEntries(rigList.map((r) => [r.id, r.code]));
+    let assignmentsForFo = Object.values(mockStoreAfterPositive.assignments ?? {}).filter((a) => a.foId === foId1);
+    const abcAssignments = assignmentsForFo.filter((a) => a.businessId === abcBizId);
+    check(abcAssignments.length === 4, `(A)(B)(C) all four ABC Motors assignments persisted to the backend (got ${abcAssignments.length})`);
+    check(new Set(abcAssignments.map((a) => a.id)).size === 4, "(F) each of the four persisted assignments has a distinct deterministic id");
+    const abcRigCodes = new Set(abcAssignments.map((a) => rigCodeById[a.rigId]));
+    check(
+      ["R-01", "R-02", "R-03", "R-04"].every((c) => abcRigCodes.has(c)),
+      `(F) each assignment carries its own correct rigId — got rig codes [${[...abcRigCodes].sort().join(", ")}]`,
     );
     check(
-      rig2Result.dialogStillOpen && rig2Result.errorVisible,
-      "RESTRICTION CONFIRMED: AssignmentFormDialog's foConflict check (line ~124, src/components/forms/AssignmentFormDialog.tsx) blocks a second rig for the SAME business/FO/time window — the exact scenario this round needs to support. This is a validation-layer false positive, not a data-model limitation (see scenario [2]).",
+      abcAssignments.every((a) => a.businessId === abcBizId && a.foId === foId1),
+      "each of the four assignments stays associated with the same business and the same FO",
     );
 
-    const mockStoreAfter1 = await page1.evaluate(() => JSON.parse(localStorage.getItem("__mock_firestore_store__") || "{}"));
-    const assignmentsAfter1 = Object.values(mockStoreAfter1.assignments ?? {}).filter((a) => a.foId === foId1);
-    check(assignmentsAfter1.length === 1, `confirmed at the data layer: only ONE assignment exists for this FO/business (got ${assignmentsAfter1.length}) — Rig R-02 never reached Firestore because the dialog blocked it client-side before onCreate() was ever called`);
+    console.log("\n  Negative (1): different business, same FO, overlapping time → must be rejected:");
+    const crossBiz = await assignRig("XYZ Corp", "R-05", { expectError: true });
+    check(crossBiz.dialogStillOpen, "(1) dialog stays open for the cross-business FO conflict attempt");
+    check(
+      /overlapping assignment/i.test(crossBiz.errorMessage),
+      `(1) FO double-booking error shown for a DIFFERENT business at the same FO/time (rig_double_booking's own message text was not matched, confirming this is the FO-level check) — text sample: "${crossBiz.errorMessage.slice(0, 200)}"`,
+    );
+    const storeAfterCrossBiz = await page1.evaluate(() => JSON.parse(localStorage.getItem("__mock_firestore_store__") || "{}"));
+    const xyzAssignments = Object.values(storeAfterCrossBiz.assignments ?? {}).filter((a) => a.businessId === xyzBizId);
+    check(xyzAssignments.length === 0, "(1) confirmed at the data layer: the rejected XYZ Corp/R-05 assignment never reached the backend");
+
+    console.log("\n  Negative (2): same business, same FO, SAME rig, overlapping time → must be rejected:");
+    const sameRig = await assignRig("ABC Motors", "R-01", { expectError: true });
+    check(sameRig.dialogStillOpen, "(2) dialog stays open for the same-rig conflict attempt");
+    check(
+      /already assigned to another visit/i.test(sameRig.errorMessage),
+      `(2) rig-level double-booking error shown (rigConflict check, unchanged) — text sample: "${sameRig.errorMessage.slice(0, 200)}"`,
+    );
+    const storeAfterSameRig = await page1.evaluate(() => JSON.parse(localStorage.getItem("__mock_firestore_store__") || "{}"));
+    const abcAssignmentsAfterSameRig = Object.values(storeAfterSameRig.assignments ?? {}).filter((a) => a.businessId === abcBizId);
+    check(abcAssignmentsAfterSameRig.length === 4, "(2)(D) confirmed at the data layer: still exactly 4 ABC Motors assignments — the duplicate R-01 attempt never reached the backend (rejected/idempotent)");
+
+    console.log("\n  Positive (3): same business + same FO + different rigs + same time → allowed (re-confirmed from the 4 successful creates above):");
+    check(abcAssignments.length === 4 && new Set(abcAssignments.map((a) => a.rigId)).size === 4, "(3) four distinct rigs, one business, one FO, one time window, all persisted");
 
     await context1.close();
 
-    // ------------------------------------------------------------------
-    console.log(
-      "\n[2] THE DATA MODEL ALREADY SUPPORTS IT: seeding four rig assignments for the SAME business+FO+date+time window " +
-        "directly (bypassing the dialog), using the REAL deriveAssignmentId() algorithm, to prove the store/hours/FO-Today/" +
-        "evidence layers have no such restriction:",
-    );
+    // ==================================================================
+    console.log("\n[2] DOWNSTREAM STATE — using the assignments actually created above via the real dialog:");
     const context2 = await browser.newContext();
     const page2 = await context2.newPage();
     await page2.addInitScript(MOCK_BACKEND_INIT_SCRIPT);
     page2.on("pageerror", (err) => console.error("  [page error]", err.message));
 
-    const FO_ID = "fo_multi_rig";
-    const BIZ_ID = "biz_abc_motors";
-    const today = new Date().toISOString().slice(0, 10);
-    const plannedStart = `${today}T09:00:00.000Z`;
-    const plannedEnd = `${today}T19:00:00.000Z`;
-    const rigIds = ["rig_01", "rig_02", "rig_03", "rig_04"];
-    const collectorIds = ["worker_01", "worker_02", "worker_03", "worker_04"];
-
-    const identities = rigIds.map((rigId) => ({ businessId: BIZ_ID, foId: FO_ID, date: today, plannedStart, plannedEnd, rigId }));
-    const computedIds = identities.map(deriveAssignmentId);
-    check(new Set(computedIds).size === 4, `all four rigs produce DISTINCT deterministic assignment ids (got ${new Set(computedIds).size} distinct out of 4) — confirms rigId IS part of the identity in src/lib/assignmentIdentity.ts`);
-
+    // Re-seed context2's mock backend + local store with the SAME
+    // assignments context1 actually created (Playwright contexts don't
+    // share localStorage), then authenticate as Manager and as the FO in
+    // turn to read back derived state — this exercises the same
+    // hours/FO-Today/evidence code paths the previous round's investigation
+    // already proved correct, now against data whose CREATION path (the
+    // dialog) is itself under test.
     await page2.goto(`${BASE_URL}/login`);
-    await page2.evaluate(
-      ({ FO_ID, BIZ_ID, today, plannedStart, plannedEnd, rigIds, collectorIds, computedIds }) => {
+    const seedResult = await page2.evaluate(
+      ({ mockStore, foId, abcBizId }) => {
         const now = new Date().toISOString();
-        const business = { id: BIZ_ID, name: "ABC Motors", category: "General", area: "Test Area", address: "", capacityHoursPerDay: 40, active: true, createdAt: now };
-        const fo = { id: FO_ID, name: "Multi-Rig Test FO", active: true, createdAt: now };
-        const rigs = rigIds.map((id, i) => ({ id, code: `R-0${i + 1}`, model: "Test Rig", active: true, batteryPct: 100, storagePct: 0, deploymentStatus: "active", createdAt: now }));
-        const collectors = collectorIds.map((id, i) => ({ id, name: `Worker ${i + 1}`, businessId: BIZ_ID, active: true, createdAt: now }));
-        const assignments = computedIds.map((id, i) => ({
-          id,
-          date: today,
-          businessId: BIZ_ID,
-          foId: FO_ID,
-          rigId: rigIds[i],
-          collectorId: collectorIds[i],
-          plannedStart,
-          plannedEnd,
-          priority: "normal",
-          status: "confirmed",
-          actualArrivalAt: now,
-          createdAt: now,
-        }));
+        localStorage.setItem("__mock_firestore_store__", JSON.stringify(mockStore));
         const cityData = {
           version: 2,
           settings: { cityName: "Test City", workingHoursStart: "08:00", workingHoursEnd: "19:00", defaultSessionDurationMin: 120, recordingHoursTargetPerDay: 10, theme: "dark", onboarded: true },
-          businesses: [business],
-          fos: [fo],
-          collectors,
-          rigs,
-          assignments,
+          businesses: Object.values(mockStore.businesses ?? {}),
+          fos: Object.values(mockStore.fos ?? {}),
+          collectors: [],
+          rigs: Object.values(mockStore.rigs ?? {}),
+          assignments: Object.values(mockStore.assignments ?? {}).filter((a) => a.foId === foId && a.businessId === abcBizId),
           sessions: [],
           evidence: [],
           issues: [],
@@ -322,17 +352,12 @@ async function main() {
           "city-ops-auth",
           JSON.stringify({ id: "demo-manager", email: "manager@demo.city-ops", role: "MANAGER", displayName: "Demo Manager", createdAt: now }),
         );
-        const mockStore = {
-          businesses: { [business.id]: business },
-          fos: { [fo.id]: fo },
-          rigs: Object.fromEntries(rigs.map((r) => [r.id, r])),
-          assignments: Object.fromEntries(assignments.map((a) => [a.id, a])),
-          evidence: {},
-        };
-        localStorage.setItem("__mock_firestore_store__", JSON.stringify(mockStore));
+        return cityData.assignments.map((a) => a.id);
       },
-      { FO_ID, BIZ_ID, today, plannedStart, plannedEnd, rigIds, collectorIds, computedIds },
+      { mockStore: mockStoreAfterPositive, foId: foId1, abcBizId },
     );
+    const abcAssignmentIds = seedResult;
+    check(abcAssignmentIds.length === 4, "seeded context2 with the 4 real assignments created via the UI in scenario [1]");
 
     console.log("  Reloading as Manager to read back Business 360's rig count / required hours...");
     await page2.reload();
@@ -342,9 +367,9 @@ async function main() {
     await page2.click("text=ABC Motors");
     await sleep(500);
     const bizPageText = await page2.evaluate(() => document.body.innerText);
-    check(/\b40h\b|\b40\s*h\b|40 hours|Target.*40/i.test(bizPageText), `Business 360 shows the 40h target (4 rigs × 10h — src/engine/insights.ts's businessTargetHours, no hardcoded per-business constant) — body text sample checked`);
+    check(/\b40h\b|\b40\s*h\b|40 hours|Target.*40/i.test(bizPageText), "(H) Business 360 shows the 40h target (4 rigs × 10h — src/engine/insights.ts's businessTargetHours, not hardcoded)");
     const rigsStatValue = await page2.locator("text=Rigs").locator("xpath=..").innerText().catch(() => "");
-    check(rigsStatValue.includes("4"), `Business 360's "Rigs" stat shows 4 (src/engine/insights.ts's businessRigCount — distinct rigIds across today's assignments) — got "${rigsStatValue.replace(/\s+/g, " ").trim()}"`);
+    check(rigsStatValue.includes("4"), `Business 360's "Rigs" stat shows 4 — got "${rigsStatValue.replace(/\s+/g, " ").trim()}"`);
 
     console.log("\n  Switching to the FO's own device to check Today's Plan and per-assignment isolation...");
     await page2.evaluate((assignedFoId) => {
@@ -353,35 +378,38 @@ async function main() {
         "city-ops-auth",
         JSON.stringify({ id: "demo-fo-test-" + assignedFoId, email: "test-fo@demo.city-ops", role: "FIELD_OFFICER", displayName: "Test FO", foId: assignedFoId, createdAt: new Date().toISOString() }),
       );
-    }, FO_ID);
+    }, foId1);
     await page2.goto(`${BASE_URL}/fo`);
     await page2.waitForSelector("text=Today", { timeout: 15000 });
     await sleep(1500);
 
     const todayBodyText = await page2.evaluate(() => document.body.innerText);
-    check(todayBodyText.includes("4 ASSIGNMENTS"), '(I) FO Today shows "4 ASSIGNMENTS" — all four rig deployments listed, none merged into a single business card');
+    check(todayBodyText.includes("4 ASSIGNMENTS"), '(I) FO Today shows "4 ASSIGNMENTS" for the real dialog-created assignments — none merged into a single business card');
     for (const code of ["R-01", "R-02", "R-03", "R-04"]) {
       check(todayBodyText.includes(code), `(I) FO Today shows a card for ${code}`);
     }
+    check(!todayBodyText.includes("R-05"), "(I) FO Today does NOT show R-05 — that attempt was correctly rejected and never persisted");
 
     console.log("\n  (J) Completing Rig 1's assignment directly must not affect Rigs 2-4:");
     // No reload here, deliberately: reloading would re-trigger the FO's
     // sync engine, which re-fetches "assignments" from the mock backend
-    // (still "confirmed" — this mutation is LOCAL-only, testing structural
-    // isolation, not sync persistence) and, via mergeRemoteCollection's
-    // full-replace, would silently overwrite this exact change.
+    // (still the pre-mutation status — this mutation is LOCAL-only, testing
+    // structural isolation, not sync persistence) and, via
+    // mergeRemoteCollection's full-replace, would silently overwrite this
+    // exact change.
+    const rig1AssignmentId = abcAssignmentIds[0];
     const afterComplete = await page2.evaluate((rig1Id) => {
       const raw = JSON.parse(localStorage.getItem("city-ops-os"));
       const a = raw.state.assignments.find((x) => x.id === rig1Id);
       a.status = "completed";
       localStorage.setItem("city-ops-os", JSON.stringify(raw));
       return raw.state.assignments;
-    }, computedIds[0]);
-    const statuses = computedIds.map((id) => afterComplete.find((a) => a.id === id)?.status);
+    }, rig1AssignmentId);
+    const statuses = abcAssignmentIds.map((id) => afterComplete.find((a) => a.id === id)?.status);
     check(statuses[0] === "completed", `(J) Rig 1's own assignment status is 'completed' (got '${statuses[0]}')`);
     check(
-      statuses.slice(1).every((s) => s === "confirmed"),
-      `(J) Rigs 2-4 remain 'confirmed' (independent, not marked complete) — got [${statuses.slice(1).join(", ")}]`,
+      statuses.slice(1).every((s) => s !== "completed"),
+      `(J) Rigs 2-4 remain independent, not marked complete — got [${statuses.slice(1).join(", ")}]`,
     );
 
     console.log("\n  (K) Evidence seeded under Rig 1's assignment must not appear under Rig 2's:");
@@ -407,15 +435,118 @@ async function main() {
         localStorage.setItem("city-ops-os", JSON.stringify(raw));
         return raw.state.evidence;
       },
-      { rig1AssignmentId: computedIds[0], biz: BIZ_ID, fo: FO_ID },
+      { rig1AssignmentId, biz: abcBizId, fo: foId1 },
     );
-    const rig1Evidence = evidenceState.filter((e) => e.assignmentId === computedIds[0]);
-    const rig2Evidence = evidenceState.filter((e) => e.assignmentId === computedIds[1]);
+    const rig1Evidence = evidenceState.filter((e) => e.assignmentId === rig1AssignmentId);
+    const rig2Evidence = evidenceState.filter((e) => e.assignmentId === abcAssignmentIds[1]);
     check(rig1Evidence.length === 1, "(K) Rig 1's assignment has exactly its own one evidence record");
-    check(rig2Evidence.length === 0, "(K) Rig 2's assignment has ZERO evidence records — Rig 1's evidence never leaks across via businessId (evidence is assignmentId-scoped, per src/types/index.ts's Evidence.assignmentId)");
+    check(rig2Evidence.length === 0, "(K) Rig 2's assignment has ZERO evidence records — evidence is assignmentId-scoped, never leaks across via businessId");
+
+    await context2.close();
+
+    // ==================================================================
+    console.log(
+      "\n[3] PLANNER CONFLICT DETECTION (src/engine/planner.ts's detectConflicts(), read via the real /today page's conflict banner):",
+    );
+    const context3 = await browser.newContext();
+    const page3 = await context3.newPage();
+    await page3.addInitScript(MOCK_BACKEND_INIT_SCRIPT);
+    page3.on("pageerror", (err) => console.error("  [page error]", err.message));
+
+    const P_FO_ID = "fo_planner_test";
+    const P_ABC_ID = "biz_planner_abc";
+    const P_XYZ_ID = "biz_planner_xyz";
+    const pToday = new Date().toISOString().slice(0, 10);
+    const iso = (t) => `${pToday}T${t}:00.000Z`;
+
+    // A: ABC / R-01 / 09:00-19:00
+    // B: ABC / R-02 / 09:00-19:00  — same business, different rig, same
+    //    time as A: must NOT produce fo_double_booking (the fix).
+    // C: XYZ / R-99 / 10:00-14:00  — different business, same FO,
+    //    overlapping A/B's window: MUST produce fo_double_booking.
+    // E: ABC / R-01 / 12:00-16:00  — same rig as A, overlapping, distinct
+    //    identity (different time window): MUST still produce
+    //    rig_double_booking, unaffected by the same-business exclusion.
+    const planA = { businessId: P_ABC_ID, foId: P_FO_ID, date: pToday, plannedStart: iso("09:00"), plannedEnd: iso("19:00"), rigId: "p_rig_01" };
+    const planB = { businessId: P_ABC_ID, foId: P_FO_ID, date: pToday, plannedStart: iso("09:00"), plannedEnd: iso("19:00"), rigId: "p_rig_02" };
+    const planC = { businessId: P_XYZ_ID, foId: P_FO_ID, date: pToday, plannedStart: iso("10:00"), plannedEnd: iso("14:00"), rigId: "p_rig_99" };
+    const planE = { businessId: P_ABC_ID, foId: P_FO_ID, date: pToday, plannedStart: iso("12:00"), plannedEnd: iso("16:00"), rigId: "p_rig_01" };
+    const planAssignments = [planA, planB, planC, planE].map((a) => ({ ...a, id: deriveAssignmentId(a), priority: "normal", status: "confirmed", createdAt: new Date().toISOString() }));
+    check(new Set(planAssignments.map((a) => a.id)).size === 4, "planner-test seed: all 4 conflict-matrix assignments have distinct ids");
+
+    await page3.goto(`${BASE_URL}/login`);
+    await page3.evaluate(
+      ({ P_FO_ID, P_ABC_ID, P_XYZ_ID, pToday, planAssignments }) => {
+        const now = new Date().toISOString();
+        const businesses = [
+          { id: P_ABC_ID, name: "ABC Motors", category: "General", area: "Test Area", address: "", capacityHoursPerDay: 40, active: true, createdAt: now },
+          { id: P_XYZ_ID, name: "XYZ Corp", category: "General", area: "Other Area", address: "", capacityHoursPerDay: 40, active: true, createdAt: now },
+        ];
+        const fos = [{ id: P_FO_ID, name: "Planner Test FO", active: true, createdAt: now }];
+        const rigs = ["p_rig_01", "p_rig_02", "p_rig_99"].map((id, i) => ({ id, code: `R-0${i + 1}`, model: "Test Rig", active: true, batteryPct: 100, storagePct: 0, deploymentStatus: "active", createdAt: now }));
+        const cityData = {
+          version: 2,
+          settings: { cityName: "Test City", workingHoursStart: "08:00", workingHoursEnd: "19:00", defaultSessionDurationMin: 120, recordingHoursTargetPerDay: 10, theme: "dark", onboarded: true },
+          businesses,
+          fos,
+          collectors: [],
+          rigs,
+          assignments: planAssignments,
+          sessions: [],
+          evidence: [],
+          issues: [],
+          qualityReviews: [],
+          correctiveActions: [],
+          rigIncidents: [],
+          repairRecords: [],
+          activity: [],
+          plans: [],
+          reports: [],
+        };
+        localStorage.setItem("city-ops-os", JSON.stringify({ state: cityData, version: 2 }));
+        localStorage.setItem(
+          "city-ops-auth",
+          JSON.stringify({ id: "demo-manager", email: "manager@demo.city-ops", role: "MANAGER", displayName: "Demo Manager", createdAt: now }),
+        );
+        const mockStore = {
+          businesses: Object.fromEntries(businesses.map((b) => [b.id, b])),
+          fos: Object.fromEntries(fos.map((f) => [f.id, f])),
+          rigs: Object.fromEntries(rigs.map((r) => [r.id, r])),
+          assignments: Object.fromEntries(planAssignments.map((a) => [a.id, a])),
+          evidence: {},
+        };
+        localStorage.setItem("__mock_firestore_store__", JSON.stringify(mockStore));
+      },
+      { P_FO_ID, P_ABC_ID, P_XYZ_ID, pToday, planAssignments },
+    );
+
+    await page3.reload();
+    await page3.waitForSelector("text=Command Center", { timeout: 15000 });
+    // Root "/" renders Command Center, not the Today page — the conflict
+    // banner (fed by detectConflicts()) only renders on /today, so navigate
+    // there explicitly rather than relying on a generic "Today" text match
+    // (which would otherwise match the sidebar nav link on ANY page).
+    await page3.goto(`${BASE_URL}/today`);
+    await page3.waitForSelector("text=Timeline", { timeout: 15000 });
+    await sleep(800);
+    const conflictBannerText = await page3.evaluate(() => document.body.innerText);
+
+    check(
+      !/is double-booked:\s*ABC Motors and ABC Motors overlap/i.test(conflictBannerText),
+      "same business + different rigs (R-01/R-02) + same time → NO false-positive fo_double_booking banner",
+    );
+    check(
+      /is double-booked:\s*(ABC Motors and XYZ Corp|XYZ Corp and ABC Motors) overlap/i.test(conflictBannerText),
+      "different business (ABC vs XYZ) + same FO + overlapping time → fo_double_booking banner IS shown",
+    );
+    check(
+      /Rig R-01 is double-booked between/i.test(conflictBannerText),
+      "same rig (R-01) + overlapping time → rig_double_booking banner IS shown, regardless of business (unchanged behavior)",
+    );
+    check(!/Rig R-02 is double-booked between/i.test(conflictBannerText), "R-02 (only one assignment, no overlap) → no rig_double_booking banner for it");
 
     if (failures > 0) console.error("\n--- preview server output (for debugging) ---\n" + serverOutput.slice(-4000));
-    await context2.close();
+    await context3.close();
   } finally {
     await browser.close();
     await killAndWait(server);
