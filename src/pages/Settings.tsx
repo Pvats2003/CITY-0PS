@@ -41,6 +41,7 @@ import { RigFormDialog } from "@/components/forms/RigFormDialog";
 import { parseLeadSpreadsheet } from "@/lib/xlsxParse";
 import { planBusinessImport, applyReviewResolutions, emptyReviewResolutions, type ImportPlan, type ReviewResolutions } from "@/engine/businessImport";
 import { BusinessDataQuality } from "@/components/import/BusinessDataQuality";
+import { ImportPreflight } from "@/components/import/ImportPreflight";
 
 const ROLE_LABEL: Record<string, string> = {
   MANAGER: "Manager",
@@ -76,7 +77,7 @@ export default function Settings() {
   // Data Quality review resolutions for the currently-open plan — session-
   // only state (see the "Review-state architecture" note above
   // confirmBizImport() for why this is never persisted to Firestore).
-  const [bizImportTab, setBizImportTab] = useState<"summary" | "quality">("summary");
+  const [bizImportTab, setBizImportTab] = useState<"summary" | "quality" | "preflight">("summary");
   const [bizImportResolutions, setBizImportResolutions] = useState<ReviewResolutions>(emptyReviewResolutions());
   const resolvedBizImportPlan = useMemo(
     () => (bizImportPlan ? applyReviewResolutions(bizImportPlan, bizImportResolutions) : null),
@@ -527,13 +528,16 @@ export default function Settings() {
           </DialogHeader>
           {bizImportPlan && resolvedBizImportPlan && (
             <>
-              <Tabs value={bizImportTab} onValueChange={(v) => setBizImportTab(v as "summary" | "quality")}>
+              <Tabs value={bizImportTab} onValueChange={(v) => setBizImportTab(v as "summary" | "quality" | "preflight")}>
                 <TabsList>
                   <TabsTrigger value="summary" data-testid="biz-import-tab-summary">
                     Summary
                   </TabsTrigger>
                   <TabsTrigger value="quality" data-testid="biz-import-tab-quality">
                     Business Data Quality
+                  </TabsTrigger>
+                  <TabsTrigger value="preflight" data-testid="biz-import-tab-preflight">
+                    Import Preflight
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
@@ -626,7 +630,19 @@ export default function Settings() {
                   onChange={setBizImportResolutions}
                 />
               )}
+
+              {bizImportTab === "preflight" && <ImportPreflight plan={bizImportPlan} resolvedPlan={resolvedBizImportPlan} resolutions={bizImportResolutions} />}
             </>
+          )}
+          {resolvedBizImportPlan && (
+            <div className="text-sm text-muted px-0.5" data-testid="biz-import-confirmation-summary">
+              <strong className="text-foreground tabular-nums">{resolvedBizImportPlan.counts.ready}</strong> businesses will be created.{" "}
+              <strong className="text-foreground tabular-nums">{resolvedBizImportPlan.counts.update}</strong> existing businesses will be updated.{" "}
+              <strong className="text-foreground tabular-nums">
+                {resolvedBizImportPlan.counts.total - resolvedBizImportPlan.counts.ready - resolvedBizImportPlan.counts.update}
+              </strong>{" "}
+              rows will NOT be imported because they remain unresolved.
+            </div>
           )}
           <DialogFooter>
             <Button variant="ghost" onClick={cancelBizImport}>
