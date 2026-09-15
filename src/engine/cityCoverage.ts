@@ -1,7 +1,7 @@
 import type { Assignment, Business, CityData, Issue } from "@/types";
 import { resolveBusinessCoordinates } from "@/lib/googleMaps";
 import { businessRigCount, businessTargetHours } from "./insights";
-import { recordedHoursForBusinessDate } from "./selectors";
+import { recordedHoursForBusinessDate, overlaps } from "./selectors";
 import { haversineMeters } from "./execution";
 
 // ---------------------------------------------------------------------------
@@ -139,11 +139,33 @@ export function projectPoints(points: { lat: number; lng: number }[], width: num
 
 export type CityBusinessStatus = "assigned" | "at_risk" | "completed" | "unavailable" | "unassigned" | "unknown";
 
+/** Machine-readable reason code, one per deriveBusinessStatus() branch —
+ * lets Phase D's severity model and Recovery Radar switch on a stable
+ * code instead of parsing the human-readable `reason` string. "on_track"
+ * covers assigned/completed-at-or-above-target/unassigned: nothing here
+ * needs Manager attention. */
+export type CityBusinessStatusCause =
+  | "inactive"
+  | "unavailable_date"
+  | "no_assignment"
+  | "assignment_cancelled"
+  | "rejected"
+  | "no_show"
+  | "rejected_or_no_show_mixed"
+  | "partial_rejected_or_no_show"
+  | "recheck_requested"
+  | "operational_issue"
+  | "hours_shortfall"
+  | "on_track";
+
 export interface CityBusinessStatusResult {
   status: CityBusinessStatus;
   /** Only ever set when directly supported by the fields inspected below —
    * never a generic filler string. */
   reason?: string;
+  /** Stable machine-readable code for the same fact `reason` describes in
+   * prose — see CityBusinessStatusCause. */
+  cause: CityBusinessStatusCause;
   /** businessRigCount(data, businessId, date) — distinct rigs deployed via
    * a non-cancelled assignment, the same count Business 360 shows. */
   rigCount: number;
@@ -159,6 +181,14 @@ export interface CityBusinessStatusResult {
    * never mutated. A Manager drilling into this business still sees each
    * one independently. */
   assignmentIds: string[];
+  /** The specific assignment(s) that directly caused an at_risk/
+   * unavailable status (the rejected/no-show ones, the one flagged for
+   * recheck, or — for a plain hours shortfall on completed work — every
+   * completed assignment, since all of them together produced the
+   * shortfall). Empty for assigned/completed/unassigned/on_track — there
+   * is no single assignment-level "cause" for a healthy or simply
+   * unscheduled business. */
+  affectedAssignmentIds: string[];
 }
 
 const AT_RISK_ISSUE_TYPES = new Set<Issue["type"]>(["rig_failure", "recording_failure", "damage", "missing_evidence"]);
@@ -213,12 +243,12 @@ export function deriveBusinessStatus(business: Business, data: CityData, date: s
     assignmentIds: assignmentsToday.map((a) => a.id),
   };
 
-  if (business.active === false) return { ...base, status: "unavailable", reason: "Business marked inactive" };
-  if (business.unavailableDates?.includes(date)) return { ...base, status: "unavailable", reason: "Business marked unavailable today" };
-  if (assignmentsToday.length === 0) return { ...base, status: "unassigned", reason: "No assignment scheduled today" };
+  if (business.active === false) return { ...base, status: "unavailable", cause: "inactive", reason: "Business marked inactive", affectedAssignmentIds: [] };
+  if (business.unavailableDates?.includes(date)) return { ...base, status: "unavailable", cause: "unavailable_date", reason: "Business marked unavailable today", affectedAssignmentIds: [] };
+  if (assignmentsToday.length === 0) return { ...base, status: "unassigned", cause: "no_assignment", reason: "No assignment scheduled today", affectedAssignmentIds: [] };
 
   const nonCancelled = assignmentsToday.filter((a) => a.status !== "cancelled");
-  if (nonCancelled.length === 0) return { ...base, status: "unassigned", reason: "Today's assignment was cancelled" };
+  if (nonCancelled.length === 0) return { ...base, status: "unassigned", cause: "assignment_cancelled", reason: "Today's assignment was cancelled", affectedAssignmentIds: [] };
 
   const rejectedOrNoShow = nonCancelled.filter(isRejectedOrNoShow);
   const stillActive = nonCancelled.filter((a) => !isRejectedOrNoShow(a));
@@ -229,33 +259,60 @@ export function deriveBusinessStatus(business: Business, data: CityData, date: s
     return {
       ...base,
       status: "unavailable",
+      cause: allRejected ? "rejected" : allNoShow ? "no_show" : "rejected_or_no_show_mixed",
       reason: allRejected ? "Today's assignment was rejected by the business" : allNoShow ? "FO recorded a no-show for today's visit" : "All of today's assignments were rejected or no-show",
+      affectedAssignmentIds: rejectedOrNoShow.map((a) => a.id),
     };
   }
   if (rejectedOrNoShow.length > 0) {
-    return { ...base, status: "at_risk", reason: `${rejectedOrNoShow.length} of ${nonCancelled.length} assignments rejected or no-show today` };
+    return {
+      ...base,
+      status: "at_risk",
+      cause: "partial_rejected_or_no_show",
+      reason: `${rejectedOrNoShow.length} of ${nonCancelled.length} assignments rejected or no-show today`,
+      affectedAssignmentIds: rejectedOrNoShow.map((a) => a.id),
+    };
   }
 
-  if (stillActive.some((a) => a.reviewStatus === "recheck_requested")) {
-    return { ...base, status: "at_risk", reason: "Manager requested a recheck on today's evidence" };
+  const recheckAssignments = stillActive.filter((a) => a.reviewStatus === "recheck_requested");
+  if (recheckAssignments.length > 0) {
+    return { ...base, status: "at_risk", cause: "recheck_requested", reason: "Manager requested a recheck on today's evidence", affectedAssignmentIds: recheckAssignments.map((a) => a.id) };
   }
 
   const openRiskIssue = data.issues.find(
     (i) => i.businessId === business.id && (i.status === "open" || i.status === "in_progress") && AT_RISK_ISSUE_TYPES.has(i.type),
   );
   if (openRiskIssue) {
-    return { ...base, status: "at_risk", reason: AT_RISK_ISSUE_REASON[openRiskIssue.type] ?? "Open operational issue" };
+    const affected = openRiskIssue.assignmentId && stillActive.some((a) => a.id === openRiskIssue.assignmentId) ? [openRiskIssue.assignmentId] : [];
+    return { ...base, status: "at_risk", cause: "operational_issue", reason: AT_RISK_ISSUE_REASON[openRiskIssue.type] ?? "Open operational issue", affectedAssignmentIds: affected };
   }
 
   const allCompleted = stillActive.length > 0 && stillActive.every((a) => a.status === "completed");
   if (allCompleted) {
     if (base.targetHours > 0 && base.recordedHours < base.targetHours) {
-      return { ...base, status: "at_risk", reason: `Recorded ${base.recordedHours.toFixed(1)}h of ${base.targetHours}h target` };
+      return {
+        ...base,
+        status: "at_risk",
+        cause: "hours_shortfall",
+        reason: `Recorded ${base.recordedHours.toFixed(1)}h of ${base.targetHours}h target`,
+        affectedAssignmentIds: stillActive.map((a) => a.id),
+      };
     }
-    return { ...base, status: "completed", reason: base.targetHours > 0 ? `${base.recordedHours.toFixed(1)}h of ${base.targetHours}h target recorded` : undefined };
+    return {
+      ...base,
+      status: "completed",
+      cause: "on_track",
+      reason: base.targetHours > 0 ? `${base.recordedHours.toFixed(1)}h of ${base.targetHours}h target recorded` : undefined,
+      affectedAssignmentIds: [],
+    };
   }
 
-  return { ...base, status: "assigned" };
+  // At least one assignment is still planned/confirmed/in_progress — work
+  // is genuinely in progress, NOT yet judged against the hours target.
+  // This is the guard against the false-positive the hours-shortfall
+  // branch above must never produce: an active, unfinished visit is
+  // "assigned", never prematurely "at_risk" for being under target.
+  return { ...base, status: "assigned", cause: "on_track", affectedAssignmentIds: [] };
 }
 
 /** All businesses mapped to their derived status for one date — the
@@ -280,102 +337,242 @@ export const CITY_STATUS_META: Record<CityBusinessStatus, { label: string; dot: 
 };
 
 // ---------------------------------------------------------------------------
-// Phase C — Recovery Radar groundwork ONLY. Identifies businesses a
-// Manager may want to look at; makes no recommendation, reassigns
-// nothing, and mutates no Assignment. Every candidate is just an "at_risk"
-// or "unavailable" business from deriveBusinessStatus() above, so it
-// carries no fact this module doesn't already compute and explain.
+// Phase D — Recovery Radar. Identifies businesses a Manager may want to
+// look at, with rig-level detail and a deterministic three-tier severity —
+// still makes no recommendation, reassigns nothing, and mutates no
+// Assignment. Every item is derived entirely from deriveBusinessStatus()
+// above, so it carries no fact this module doesn't already compute and
+// explain (DETECT + EXPLAIN only — RECOMMEND is rankBackupCandidates()
+// below, and ACT stays the existing Manager assignment workflow's job).
 // ---------------------------------------------------------------------------
 
-export type CityRecoverySeverity = "critical" | "warning";
+export type CityRecoverySeverity = "critical" | "high" | "medium";
 
-export interface CityRecoveryCandidate {
+/** Deterministic severity, switched on the machine-readable `cause` from
+ * deriveBusinessStatus() — never a numeric/opaque score.
+ *
+ *  CRITICAL — the business is "unavailable": inactive, marked unavailable
+ *    today, or every one of today's assignments was rejected/no-show.
+ *    Nothing is recording here today; there is no partial credit.
+ *  HIGH — a real operational failure with a specific cause: SOME (not
+ *    all) assignments rejected/no-show, an open rig/recording-failure/
+ *    damage/missing-evidence issue, or a completed business whose
+ *    shortfall is at least half its target.
+ *  MEDIUM — the more recoverable cases: a recheck request, or a
+ *    completed business whose shortfall is under half its target. */
+function deriveRecoverySeverity(result: CityBusinessStatusResult, remainingHoursAtRisk: number): CityRecoverySeverity {
+  switch (result.cause) {
+    case "inactive":
+    case "unavailable_date":
+    case "rejected":
+    case "no_show":
+    case "rejected_or_no_show_mixed":
+      return "critical";
+    case "partial_rejected_or_no_show":
+    case "operational_issue":
+      return "high";
+    case "hours_shortfall":
+      return result.targetHours > 0 && remainingHoursAtRisk >= result.targetHours / 2 ? "high" : "medium";
+    case "recheck_requested":
+      return "medium";
+    default:
+      return "medium";
+  }
+}
+
+export interface CityRecoveryItem {
   businessId: string;
   status: CityBusinessStatus;
-  reason: string;
+  cause: CityBusinessStatusCause;
   severity: CityRecoverySeverity;
+  reason: string;
+  rigCount: number;
   targetHours: number;
   recordedHours: number;
   /** max(targetHours - recordedHours, 0) — never negative, never implies a
-   * business that exceeded its target is somehow still "at risk". */
+   * business that met or exceeded its target is somehow still at risk. */
   remainingHoursAtRisk: number;
+  /** Every real Assignment id for this business today — never merged,
+   * never mutated. */
+  assignmentIds: string[];
+  /** The specific assignment(s) directly responsible for this recovery
+   * item — see CityBusinessStatusResult.affectedAssignmentIds. */
+  affectedAssignmentIds: string[];
+  /** Distinct rigs among affectedAssignmentIds — "2 of 3 rigs affected",
+   * never a re-count of the whole business when only some of it failed. */
+  affectedRigCount: number;
+  /** The FO on the affected assignment(s), when every affected assignment
+   * shares exactly one FO (the common single-visit case) — undefined when
+   * there are no affected assignments or they don't agree on an FO, so a
+   * caller never guesses which FO a backup recommendation should route
+   * through. */
+  foId?: string;
 }
 
-/** Businesses whose derived status is "unavailable" (nothing recording
- * today) or "at_risk" (a real shortfall/open issue/recheck/partial
- * rejection) — sorted worst-first by remaining hours at risk. This is
- * groundwork only: it surfaces candidates for a Manager to review, never
- * triggers or suggests an automatic reassignment. */
-export function identifyBusinessesNeedingAttention(data: CityData, date: string): CityRecoveryCandidate[] {
-  const out: CityRecoveryCandidate[] = [];
+/** Businesses whose derived status is "unavailable" or "at_risk" — sorted
+ * worst-first (severity, then remaining hours at risk). DETECT + EXPLAIN
+ * only: surfaces items for a Manager to review, never triggers or
+ * suggests an automatic reassignment. An in-progress business (still
+ * planned/confirmed/in_progress) never appears here — see
+ * deriveBusinessStatus()'s own guard against judging unfinished work
+ * against its hours target. */
+export function identifyBusinessesNeedingAttention(data: CityData, date: string): CityRecoveryItem[] {
+  const assignmentById = new Map(data.assignments.map((a) => [a.id, a]));
+  const out: CityRecoveryItem[] = [];
   for (const business of data.businesses) {
     const result = deriveBusinessStatus(business, data, date);
     if (result.status !== "at_risk" && result.status !== "unavailable") continue;
     const remainingHoursAtRisk = Math.max(result.targetHours - result.recordedHours, 0);
+    const affectedAssignments = result.affectedAssignmentIds.map((id) => assignmentById.get(id)).filter((a): a is Assignment => !!a);
+    const affectedRigIds = new Set(affectedAssignments.filter((a) => a.rigId).map((a) => a.rigId));
+    const affectedFoIds = new Set(affectedAssignments.map((a) => a.foId));
     out.push({
       businessId: business.id,
       status: result.status,
+      cause: result.cause,
+      severity: deriveRecoverySeverity(result, remainingHoursAtRisk),
       reason: result.reason ?? CITY_STATUS_META[result.status].label,
-      severity: result.status === "unavailable" ? "critical" : remainingHoursAtRisk >= result.targetHours / 2 && result.targetHours > 0 ? "critical" : "warning",
+      rigCount: result.rigCount,
       targetHours: result.targetHours,
       recordedHours: result.recordedHours,
       remainingHoursAtRisk,
+      assignmentIds: result.assignmentIds,
+      affectedAssignmentIds: result.affectedAssignmentIds,
+      affectedRigCount: affectedRigIds.size,
+      foId: affectedFoIds.size === 1 ? [...affectedFoIds][0] : undefined,
     });
   }
-  return out.sort((a, b) => b.remainingHoursAtRisk - a.remainingHoursAtRisk);
+  const SEVERITY_RANK: Record<CityRecoverySeverity, number> = { critical: 0, high: 1, medium: 2 };
+  return out.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.remainingHoursAtRisk - a.remainingHoursAtRisk);
 }
 
 // ---------------------------------------------------------------------------
-// Phase C — backup-candidate preparation ONLY. A pure ranking helper with
-// no wiring into any UI yet (Phase D/G's job) and no reassignment action.
-// Eligibility is evaluated in strict order: distance never promotes an
-// otherwise-ineligible business, and any dimension without real supporting
-// data is simply omitted rather than guessed.
+// Phase D — backup-candidate engine. A pure ranking helper: no wiring into
+// any mutation, no reassignment action. Eligibility is evaluated in strict
+// order (coordinates -> operational state -> no FO conflict) and ALWAYS
+// takes priority over distance — a nearby ineligible business can never
+// outrank a farther eligible one, because ineligible candidates are
+// filtered out entirely before the distance sort ever runs. Any dimension
+// without real supporting data in the live schema (task suitability,
+// verification/trust, worker capacity) is omitted, never guessed.
 // ---------------------------------------------------------------------------
+
+export interface CityBackupEligibilityCheck {
+  label: string;
+  passed: boolean;
+}
 
 export interface CityBackupCandidate {
   businessId: string;
   /** Straight-line Haversine distance in meters from the reference point —
    * see engine/execution.ts's haversineMeters. Never driving distance. */
   distanceMeters: number;
-  /** True facts this candidate satisfies, in eligibility-order — a UI can
-   * render these directly (e.g. "✓ Valid coordinates") without inventing
-   * a composite score. */
   eligible: boolean;
-  /** Populated only when eligible === false — why distance alone couldn't
-   * make this business a viable backup. */
+  /** Every check this candidate was evaluated against, in eligibility
+   * order, each with a plain pass/fail — a UI renders these directly
+   * (e.g. "✓ Active", "✗ No conflicting assignment") without inventing a
+   * composite score. */
+  checks: CityBackupEligibilityCheck[];
+  /** Populated only when eligible === false — the first failing check's
+   * label, for a compact one-line explanation. */
   ineligibleReason?: string;
+}
+
+/** The visit-level time window and owning FO a backup is being sought
+ * for — normally derived from the recovery item's own affected (or all)
+ * assignments; see findBackupCandidates() below, which builds this for
+ * you from a CityRecoveryItem. Passed explicitly here so this function
+ * stays a pure, independently-testable unit. */
+export interface CityBackupReferenceContext {
+  foId: string;
+  date: string;
+  plannedStart: string;
+  plannedEnd: string;
 }
 
 /** Ranks candidate businesses near a reference point (typically an FO's
  * last-known location, or the at-risk business's own coordinates) by
  * straight-line distance, AFTER filtering to businesses that are
- * operationally eligible right now (status "unassigned" or "completed" —
- * i.e. not already carrying today's own at-risk/unavailable assignment,
- * and not the business being replaced). No opaque composite "backup
- * score" is computed: eligibility is a plain boolean plus a reason, and
- * ranking among eligible candidates is distance alone, since no other
- * dimension (task suitability, verification/trust, worker capacity) has a
- * real field to support it in the live schema today — see this feature's
- * Phase 0 discovery. Extending eligibility/ranking with a genuinely
- * data-backed dimension is Phase D's job, not this one's. */
+ * operationally eligible right now. Eligibility, in order:
+ *
+ *  1. Valid coordinates (via mappableBusinesses — no marker, no candidate).
+ *  2. Business.active !== false.
+ *  3. Not marked unavailable today (Business.unavailableDates).
+ *  4. Today's derived status is "unassigned" or "completed" — i.e. not
+ *     already carrying its own at-risk/unavailable assignment, and not
+ *     the business being replaced.
+ *  5. No conflicting assignment: the reference FO has no OTHER assignment
+ *     on `referenceContext.date` whose time window overlaps
+ *     [plannedStart, plannedEnd) at this candidate business — reusing
+ *     selectors.ts's overlaps(), the exact same function
+ *     engine/planner.ts's detectConflicts() uses for FO double-booking.
+ *
+ * No opaque composite "backup score" is computed: eligibility is a plain
+ * checklist, and ranking among eligible candidates is distance alone,
+ * since no other dimension (task suitability, verification/trust, worker
+ * capacity) has a real field to support it in the live schema today — see
+ * this feature's Phase 0 discovery. */
 export function rankBackupCandidates(
   data: CityData,
-  date: string,
+  referenceContext: CityBackupReferenceContext,
   referencePoint: { lat: number; lng: number },
   excludeBusinessId: string,
 ): CityBackupCandidate[] {
+  const foAssignmentsOnDate = data.assignments.filter((a) => a.foId === referenceContext.foId && a.date === referenceContext.date && a.status !== "cancelled");
+
   const candidates: CityBackupCandidate[] = [];
   for (const { business, lat, lng } of mappableBusinesses(data.businesses)) {
     if (business.id === excludeBusinessId) continue;
-    const status = deriveBusinessStatus(business, data, date);
-    const eligible = status.status === "unassigned" || status.status === "completed";
+    const status = deriveBusinessStatus(business, data, referenceContext.date);
+    const operationallyEligible = status.status === "unassigned" || status.status === "completed";
+
+    const conflicting = foAssignmentsOnDate.find(
+      (a) => a.businessId === business.id && overlaps(a.plannedStart, a.plannedEnd, referenceContext.plannedStart, referenceContext.plannedEnd),
+    );
+    const noConflict = !conflicting;
+
+    const checks: CityBackupEligibilityCheck[] = [
+      { label: "Active", passed: business.active !== false },
+      { label: "Available today", passed: !business.unavailableDates?.includes(referenceContext.date) },
+      { label: `Not already ${status.status === "at_risk" ? "at risk" : status.status} today`, passed: operationallyEligible },
+      { label: "No conflicting assignment", passed: noConflict },
+    ];
+    const firstFailed = checks.find((c) => !c.passed);
+
     candidates.push({
       businessId: business.id,
       distanceMeters: haversineMeters(referencePoint.lat, referencePoint.lng, lat, lng),
-      eligible,
-      ineligibleReason: eligible ? undefined : `Not operationally eligible today (${CITY_STATUS_META[status.status].label.toLowerCase()})`,
+      eligible: !firstFailed,
+      checks,
+      ineligibleReason: firstFailed?.label && !firstFailed.passed ? `Not eligible: ${firstFailed.label.replace(/^Not already/, "already")}` : undefined,
     });
   }
   return candidates.filter((c) => c.eligible).sort((a, b) => a.distanceMeters - b.distanceMeters);
+}
+
+/** Convenience wrapper: builds the reference context and point from a
+ * CityRecoveryItem (using its own assignments for the time window/FO, and
+ * — when available — that FO's last-known location as the distance
+ * reference point, falling back to the failing business's own
+ * coordinates when the FO has none) and calls rankBackupCandidates(). Read-
+ * only, like every function in this module: computes a ranked list for
+ * display, performs no write of any kind. */
+export function findBackupCandidatesForRecoveryItem(data: CityData, item: CityRecoveryItem, date: string): { candidates: CityBackupCandidate[]; referencePoint: { lat: number; lng: number } | undefined; referencePointSource: "fo_last_known" | "business" | undefined } {
+  const business = data.businesses.find((b) => b.id === item.businessId);
+  const sourceAssignments = data.assignments.filter((a) => item.assignmentIds.includes(a.id));
+  if (!business || sourceAssignments.length === 0 || !item.foId) {
+    return { candidates: [], referencePoint: undefined, referencePointSource: undefined };
+  }
+
+  const plannedStart = sourceAssignments.reduce((min, a) => (a.plannedStart < min ? a.plannedStart : min), sourceAssignments[0].plannedStart);
+  const plannedEnd = sourceAssignments.reduce((max, a) => (a.plannedEnd > max ? a.plannedEnd : max), sourceAssignments[0].plannedEnd);
+  const referenceContext: CityBackupReferenceContext = { foId: item.foId, date, plannedStart, plannedEnd };
+
+  const foLocation = foLastKnownLocations(data).find((f) => f.foId === item.foId);
+  const businessCoords = resolveBusinessCoordinates(business);
+  const referencePoint = foLocation ? { lat: foLocation.lat, lng: foLocation.lng } : businessCoords ? { lat: businessCoords.lat, lng: businessCoords.lng } : undefined;
+  const referencePointSource: "fo_last_known" | "business" | undefined = foLocation ? "fo_last_known" : businessCoords ? "business" : undefined;
+
+  if (!referencePoint) return { candidates: [], referencePoint: undefined, referencePointSource: undefined };
+  return { candidates: rankBackupCandidates(data, referenceContext, referencePoint, item.businessId), referencePoint, referencePointSource };
 }
