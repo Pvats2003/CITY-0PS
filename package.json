@@ -32,7 +32,10 @@
     "test:evidence-recheck-persistence": "node tests/evidence-recheck-persistence.regression.mjs",
     "test:fo-theme-selector": "node tests/fo-theme-selector.regression.mjs",
     "test:sync-error-fo-safe-wording": "node tests/sync-error-fo-safe-wording.regression.mjs",
-    "test:accessible-icon-buttons": "node tests/accessible-icon-buttons.regression.mjs"
+    "test:accessible-icon-buttons": "node tests/accessible-icon-buttons.regression.mjs",
+    "test:mobile-theme-render-audit": "node tests/mobile-theme-render-audit.regression.mjs",
+    "test:manager-full-ui-clickthrough": "node tests/manager-full-ui-clickthrough.regression.mjs",
+    "test:fo-full-execution-clickthrough": "node tests/fo-full-execution-clickthrough.regression.mjs"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.11",
