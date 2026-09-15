@@ -35,7 +35,13 @@
     "test:accessible-icon-buttons": "node tests/accessible-icon-buttons.regression.mjs",
     "test:mobile-theme-render-audit": "node tests/mobile-theme-render-audit.regression.mjs",
     "test:manager-full-ui-clickthrough": "node tests/manager-full-ui-clickthrough.regression.mjs",
-    "test:fo-full-execution-clickthrough": "node tests/fo-full-execution-clickthrough.regression.mjs"
+    "test:fo-full-execution-clickthrough": "node tests/fo-full-execution-clickthrough.regression.mjs",
+    "test:route-security": "node tests/route-security.regression.mjs",
+    "test:rig-retire-flow": "node tests/rig-retire-flow.regression.mjs",
+    "test:backup-restore": "node tests/backup-restore.regression.mjs",
+    "test:analytics-reports-values": "node tests/analytics-reports-values.regression.mjs",
+    "test:copilot-behavior": "node tests/copilot-behavior.regression.mjs",
+    "test:pwa-build-verification": "node tests/pwa-build-verification.regression.mjs"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.11",

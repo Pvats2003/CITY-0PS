@@ -43,7 +43,7 @@ export default function Reports() {
         `START OF DAY — ${fmtDate(date)}`,
         `Expected hours: ${sod.expectedHours}h / ${sod.targetHours}h target`,
         ``,
-        `BUSINESSES PLANNED (${sod.businessesPlanned.length})`,
+        `VISITS PLANNED (${sod.businessesPlanned.length})`,
         ...sod.businessesPlanned.map((b) => `- ${fmtTime(b.time)} ${b.name} (${b.foName})`),
         ``,
         `RISKS`,
@@ -66,7 +66,7 @@ export default function Reports() {
     if (tab === "eod") {
       return [
         `END OF DAY — ${fmtDate(date)}`,
-        `Businesses completed: ${eod.businessesCompleted}/${eod.businessesPlanned}`,
+        `Visits completed: ${eod.businessesCompleted}/${eod.businessesPlanned}`,
         `Recording hours: ${eod.recordingHours}h / ${eod.targetHours}h (${eod.achievementPct}%)`,
         `Quality pass rate: ${eod.qualityPassRate}%`,
         `Issues: ${eod.issueCount}`,
@@ -173,7 +173,7 @@ export default function Reports() {
               <Stat label="Expected Hours" value={fmtHours(sod.expectedHours)} />
               <Stat label="Target" value={fmtHours(sod.targetHours, 0)} />
             </div>
-            <Section title={`Businesses Planned (${sod.businessesPlanned.length})`}>
+            <Section title={`Visits Planned (${sod.businessesPlanned.length})`}>
               {sod.businessesPlanned.length === 0 ? (
                 <div className="text-sm text-muted">Nothing planned yet.</div>
               ) : (
@@ -242,7 +242,7 @@ export default function Reports() {
           <div className="space-y-5">
             <ReportTitle kind="End of Day" date={date} />
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              <Stat label="Businesses" value={`${eod.businessesCompleted}/${eod.businessesPlanned}`} />
+              <Stat label="Visits" value={`${eod.businessesCompleted}/${eod.businessesPlanned}`} />
               <Stat label="Recording Hours" value={fmtHours(eod.recordingHours)} sub={`of ${eod.targetHours}h target`} />
               <Stat label="Achievement" value={`${eod.achievementPct}%`} tone={eod.achievementPct >= 90 ? "success" : eod.achievementPct >= 70 ? "warning" : "critical"} />
               <Stat label="Quality Pass Rate" value={`${eod.qualityPassRate}%`} />
