@@ -44,7 +44,8 @@
     "test:analytics-reports-values": "node tests/analytics-reports-values.regression.mjs",
     "test:copilot-behavior": "node tests/copilot-behavior.regression.mjs",
     "test:pwa-build-verification": "node tests/pwa-build-verification.regression.mjs",
-  "test:business-import": "node tests/business-import.regression.mjs"
+  "test:business-import": "node tests/business-import.regression.mjs",
+  "test:business-data-quality": "node tests/business-data-quality.regression.mjs"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.11",

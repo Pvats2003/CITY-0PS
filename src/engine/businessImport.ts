@@ -17,6 +17,13 @@ import { haversineMeters } from "./execution";
 // Status, Risk Score, Suggested Category) that this module never touches —
 // those describe the lead-capture process, not the business entity, and the
 // production Business model has no field for any of them.
+//
+// planBusinessImport() itself (Phase F) is intentionally left unchanged in
+// behavior by everything below (Phase F.2): it stays strict, deterministic,
+// and self-contained. The Data Quality review layer — duplicateClusters on
+// its output, and the separate applyReviewResolutions() function — only ever
+// ADDS annotations or promotes a row after an explicit, recorded Manager
+// decision. It never loosens what planBusinessImport() itself flags.
 // ---------------------------------------------------------------------------
 
 /** The exact source spreadsheet columns this importer reads. Any other
@@ -118,7 +125,28 @@ export function deterministicBusinessImportId(businessCode: string): string {
   return `biz_import_${slug || "unknown"}`;
 }
 
-export type ImportRowDecision = "create" | "update" | "duplicate_review" | "invalid" | "needs_review";
+/** "excluded" is reachable only via applyReviewResolutions() — a Manager
+ * explicitly chose to keep a DIFFERENT row from this one's duplicate
+ * cluster. planBusinessImport() itself never produces this decision. */
+export type ImportRowDecision = "create" | "update" | "duplicate_review" | "invalid" | "needs_review" | "excluded";
+
+/** Why a row is blocked, as data — never re-derived from the human-readable
+ * `reasons` strings — so a review UI can offer a targeted resolution per
+ * blocker. All three can be present on the same row simultaneously; a row
+ * only reaches "create"/"update" once every blocker present on it has been
+ * explicitly resolved. */
+export interface ImportRowBlockers {
+  missingCategory: boolean;
+  coordinateConflict?: {
+    spreadsheetLat: number;
+    spreadsheetLng: number;
+    mapsLat: number;
+    mapsLng: number;
+    distanceMeters: number;
+  };
+  /** Set when this row is part of a DuplicateCluster (see ImportPlan). */
+  duplicateClusterId?: string;
+}
 
 export interface ImportRowResult {
   rowNumber: number;
@@ -135,6 +163,26 @@ export interface ImportRowResult {
   /** Set when this row matches an existing (already-imported) business by
    * deterministic id — meaning this row is an update, not a create. */
   existingBusinessId?: string;
+  blockers: ImportRowBlockers;
+}
+
+/** A group of two or more rows in ONE file that the strict importer flagged
+ * as possibly the same real-world business (by Business Code, name, phone,
+ * Maps Link, or coordinates — see planBusinessImport()). Never auto-merged;
+ * exists purely so a review UI can show "possible duplicate of" with the
+ * exact evidence, and let a Manager decide. */
+export interface DuplicateCluster {
+  /** Stable within one parsed file: the cluster's row numbers, joined. */
+  id: string;
+  rowNumbers: number[];
+  /** Which signal(s) connected these rows — e.g. ["Business Name", "Contact Phone"]. */
+  matchingSignals: string[];
+  /** True ONLY for an exactly-2-row cluster where BOTH the business name AND
+   * the contact phone match — the one case strong enough to call an
+   * outright "duplicate" rather than merely a "possible duplicate". Even
+   * then, nothing is ever auto-merged — this only changes the review UI's
+   * wording, never its behavior. */
+  conclusive: boolean;
 }
 
 export interface ImportPlan {
@@ -147,11 +195,13 @@ export interface ImportPlan {
     duplicateReview: number; // decision === "duplicate_review"
     invalid: number; // decision === "invalid"
     needsReview: number; // decision === "needs_review"
+    excluded: number; // decision === "excluded" (only reachable post-resolution)
   };
   /** Fully-formed Business records ready to write for every "create" row. */
   creates: Business[];
   /** Importer-owned-field patches ready to write for every "update" row. */
   updates: { id: string; patch: Partial<Business> }[];
+  duplicateClusters: DuplicateCluster[];
 }
 
 function normalizedNameKey(name: string): string {
@@ -168,6 +218,28 @@ function isMeaningfulPhone(phone: string | undefined): phone is string {
   return digits.length >= 7;
 }
 
+/** Shared by planBusinessImport() (a fresh create) and
+ * applyReviewResolutions() (a create that only became eligible after a
+ * Manager resolution) — one place that knows the exact shape of a newly
+ * imported Business, so the two can never drift apart. */
+function buildImportedBusiness(mappedFields: Partial<Business>, id: string, createdAt: string): Business {
+  return {
+    id,
+    name: mappedFields.name!,
+    category: mappedFields.category!,
+    area: mappedFields.area ?? "",
+    address: mappedFields.address ?? "",
+    active: true,
+    capacityHoursPerDay: DEFAULT_IMPORTED_CAPACITY_HOURS_PER_DAY,
+    createdAt,
+    ...(mappedFields.contactName != null ? { contactName: mappedFields.contactName } : {}),
+    ...(mappedFields.contactPhone != null ? { contactPhone: mappedFields.contactPhone } : {}),
+    ...(mappedFields.googleMapsUrl != null ? { googleMapsUrl: mappedFields.googleMapsUrl } : {}),
+    ...(mappedFields.lat != null ? { lat: mappedFields.lat } : {}),
+    ...(mappedFields.lng != null ? { lng: mappedFields.lng } : {}),
+  };
+}
+
 /** Builds the full, reviewable import plan for one parsed spreadsheet
  * against the businesses that already exist in production. Pure — makes no
  * Firestore/store call and mutates nothing; see src/pages/Settings.tsx for
@@ -180,13 +252,14 @@ export function planBusinessImport(existingBusinesses: Business[], rawRows: RawL
     const reasons: string[] = [];
     let decision: ImportRowDecision = "create";
     const mappedFields: Partial<Business> = {};
+    const blockers: ImportRowBlockers = { missingCategory: false };
 
     if (isBlank(raw.businessCode)) {
-      rows.push({ rowNumber: raw.rowNumber, businessName: raw.businessName, decision: "invalid", reasons: ["Missing Business Code — cannot establish a stable import identity."], mappedFields });
+      rows.push({ rowNumber: raw.rowNumber, businessName: raw.businessName, decision: "invalid", reasons: ["Missing Business Code — cannot establish a stable import identity."], mappedFields, blockers });
       continue;
     }
     if (isBlank(raw.businessName)) {
-      rows.push({ rowNumber: raw.rowNumber, businessCode: raw.businessCode, decision: "invalid", reasons: ["Missing Business Name."], mappedFields });
+      rows.push({ rowNumber: raw.rowNumber, businessCode: raw.businessCode, decision: "invalid", reasons: ["Missing Business Name."], mappedFields, blockers });
       continue;
     }
 
@@ -200,6 +273,7 @@ export function planBusinessImport(existingBusinesses: Business[], rawRows: RawL
     if (isBlank(raw.category) || raw.category!.trim().toUpperCase() === "NA" || raw.category!.trim().toUpperCase() === "N/A") {
       reasons.push("Category is missing in the source row — not imported without one (Suggested Category is never substituted automatically).");
       decision = "needs_review";
+      blockers.missingCategory = true;
     } else {
       mappedFields.category = raw.category!.trim();
     }
@@ -246,6 +320,7 @@ export function planBusinessImport(existingBusinesses: Business[], rawRows: RawL
             decision: "invalid",
             reasons: [`Latitude/Longitude ("${raw.latitude}", "${raw.longitude}") is not a valid coordinate pair.`],
             mappedFields,
+            blockers,
           });
           continue;
         }
@@ -264,6 +339,7 @@ export function planBusinessImport(existingBusinesses: Business[], rawRows: RawL
               `Latitude/Longitude columns and the Maps Link's own coordinates disagree by ~${distance}m (further apart than the ${COORD_MISMATCH_TOLERANCE_METERS}m tolerance) — flagged rather than silently choosing one.`,
             );
             decision = "needs_review";
+            blockers.coordinateConflict = { spreadsheetLat: lat, spreadsheetLng: lng, mapsLat: fromMaps.lat, mapsLng: fromMaps.lng, distanceMeters: distance };
           }
         }
       }
@@ -280,6 +356,7 @@ export function planBusinessImport(existingBusinesses: Business[], rawRows: RawL
       reasons,
       mappedFields,
       existingBusinessId: existing?.id,
+      blockers,
     });
   }
 
@@ -368,6 +445,19 @@ export function planBusinessImport(existingBusinesses: Business[], rawRows: RawL
     }
   }
 
+  // Duplicate CLUSTERS: a read-only annotation pass over the exact same
+  // groups above, connecting rows into components (union-find) so a review
+  // UI can show one "possible duplicate of" card per real-world cluster
+  // instead of one alert per signal type. Never changes any row's decision
+  // — every row this touches was already flagged duplicate_review above.
+  const duplicateClusters = buildDuplicateClusters(candidateRows, codeGroups, nameGroups, phoneGroups, mapsUrlGroups, coordGroups);
+  for (const cluster of duplicateClusters) {
+    for (const rowNumber of cluster.rowNumbers) {
+      const r = rows.find((x) => x.rowNumber === rowNumber);
+      if (r) r.blockers.duplicateClusterId = cluster.id;
+    }
+  }
+
   // Resolve final create/update decisions.
   const creates: Business[] = [];
   const updates: { id: string; patch: Partial<Business> }[] = [];
@@ -378,23 +468,7 @@ export function planBusinessImport(existingBusinesses: Business[], rawRows: RawL
       r.decision = "update";
       updates.push({ id: r.existingBusinessId, patch: r.mappedFields });
     } else {
-      const id = deterministicBusinessImportId(r.businessCode!);
-      const business: Business = {
-        id,
-        name: r.mappedFields.name!,
-        category: r.mappedFields.category!,
-        area: r.mappedFields.area ?? "",
-        address: r.mappedFields.address ?? "",
-        active: true,
-        capacityHoursPerDay: DEFAULT_IMPORTED_CAPACITY_HOURS_PER_DAY,
-        createdAt: now,
-        ...(r.mappedFields.contactName != null ? { contactName: r.mappedFields.contactName } : {}),
-        ...(r.mappedFields.contactPhone != null ? { contactPhone: r.mappedFields.contactPhone } : {}),
-        ...(r.mappedFields.googleMapsUrl != null ? { googleMapsUrl: r.mappedFields.googleMapsUrl } : {}),
-        ...(r.mappedFields.lat != null ? { lat: r.mappedFields.lat } : {}),
-        ...(r.mappedFields.lng != null ? { lng: r.mappedFields.lng } : {}),
-      };
-      creates.push(business);
+      creates.push(buildImportedBusiness(r.mappedFields, deterministicBusinessImportId(r.businessCode!), now));
     }
   }
 
@@ -405,7 +479,239 @@ export function planBusinessImport(existingBusinesses: Business[], rawRows: RawL
     duplicateReview: rows.filter((r) => r.decision === "duplicate_review").length,
     invalid: rows.filter((r) => r.decision === "invalid").length,
     needsReview: rows.filter((r) => r.decision === "needs_review").length,
+    excluded: 0,
   };
 
-  return { sourceRowCount: rawRows.length, rows, counts, creates, updates };
+  return { sourceRowCount: rawRows.length, rows, counts, creates, updates, duplicateClusters };
+}
+
+/** Connected-components over the same five signal groups
+ * planBusinessImport() already built (Business Code/Name/Phone/Maps
+ * Link/Coordinates), so a row that was flagged duplicate_review via two
+ * different signals (e.g. shares a phone with one row and a name with
+ * another) surfaces as ONE cluster, not two overlapping alerts. Purely a
+ * read-only annotation — the row-level decisions above are already final by
+ * the time this runs. */
+function buildDuplicateClusters(
+  candidateRows: ImportRowResult[],
+  codeGroups: Map<string, ImportRowResult[]>,
+  nameGroups: Map<string, ImportRowResult[]>,
+  phoneGroups: Map<string, ImportRowResult[]>,
+  mapsUrlGroups: Map<string, ImportRowResult[]>,
+  coordGroups: Map<string, ImportRowResult[]>,
+): DuplicateCluster[] {
+  const parent = new Map<number, number>();
+  function find(x: number): number {
+    let root = x;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    while (parent.get(x) !== root) {
+      const next = parent.get(x)!;
+      parent.set(x, root);
+      x = next;
+    }
+    return root;
+  }
+  function union(a: number, b: number) {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  }
+  for (const r of candidateRows) parent.set(r.rowNumber, r.rowNumber);
+
+  const labelsByRow = new Map<number, Set<string>>();
+  function addLabel(rowNumber: number, label: string) {
+    (labelsByRow.get(rowNumber) ?? labelsByRow.set(rowNumber, new Set()).get(rowNumber)!).add(label);
+  }
+  function processGroup(groups: Map<string, ImportRowResult[]>, label: string, requireDistinctIds: boolean) {
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      if (requireDistinctIds) {
+        const distinctIds = new Set(group.map((r) => deterministicBusinessImportId(r.businessCode!)));
+        if (distinctIds.size < 2) continue;
+      }
+      for (let i = 1; i < group.length; i++) union(group[0].rowNumber, group[i].rowNumber);
+      for (const r of group) addLabel(r.rowNumber, label);
+    }
+  }
+  processGroup(codeGroups, "Business Code", false);
+  processGroup(nameGroups, "Business Name", true);
+  processGroup(phoneGroups, "Contact Phone", true);
+  processGroup(mapsUrlGroups, "Maps Link", true);
+  processGroup(coordGroups, "Coordinates", true);
+
+  const componentRows = new Map<number, number[]>();
+  for (const r of candidateRows) {
+    if (!labelsByRow.has(r.rowNumber)) continue; // touched no signal at all
+    const root = find(r.rowNumber);
+    (componentRows.get(root) ?? componentRows.set(root, []).get(root)!).push(r.rowNumber);
+  }
+
+  const clusters: DuplicateCluster[] = [];
+  for (const rowNumbers of componentRows.values()) {
+    if (rowNumbers.length < 2) continue;
+    rowNumbers.sort((a, b) => a - b);
+    const signals = new Set<string>();
+    for (const rn of rowNumbers) for (const l of labelsByRow.get(rn) ?? []) signals.add(l);
+    const matchingSignals = [...signals].sort();
+    const conclusive = rowNumbers.length === 2 && signals.has("Business Name") && signals.has("Contact Phone");
+    clusters.push({ id: rowNumbers.join("-"), rowNumbers, matchingSignals, conclusive });
+  }
+  return clusters;
+}
+
+/** A Manager's explicit decision about one duplicate cluster. "keep_only"
+ * means every OTHER row in the cluster is excluded from this import (never
+ * deleted, never merged — just not written this time); a Manager can
+ * revisit by re-uploading and choosing differently. */
+export interface DuplicateClusterResolution {
+  action: "keep_all" | "keep_only" | "needs_further_review";
+  /** Required when action === "keep_only": which row number(s) in the
+   * cluster to import; every other member becomes "excluded". */
+  keepRowNumbers?: number[];
+}
+
+/** Every Manager decision made in the Data Quality review UI, keyed by
+ * rowNumber (or clusterId for duplicates). Lives only in the current Import
+ * Businesses session's React state — see the "Review-state architecture"
+ * note in src/pages/Settings.tsx for why this is deliberately NOT persisted
+ * to Firestore. */
+export interface ReviewResolutions {
+  /** rowNumber -> Manager-assigned category (must be one of the existing
+   * vocabulary offered by the UI — see categoryVocabulary() below; this
+   * function does not itself validate that, the UI enforces it via a
+   * closed Select rather than free text). */
+  categories: Record<number, string>;
+  /** rowNumber -> which coordinate source to trust. */
+  coordinateConflicts: Record<number, "spreadsheet" | "maps_link" | "needs_further_review">;
+  /** clusterId -> resolution. */
+  duplicateClusters: Record<string, DuplicateClusterResolution>;
+  /** rowNumber -> coordinates a Manager typed in by hand after opening the
+   * row's Maps Link themselves (e.g. to resolve a maps.app.goo.gl short
+   * link this importer will never auto-resolve — see COORD_MISMATCH_...
+   * comment and DEPLOYMENT notes). Never fetched, never geocoded, never
+   * derived from following a redirect — a human-entered value only.
+   * Applied whenever present; unlike the three resolutions above, this
+   * isn't gating anything (a business without coordinates already imports
+   * fine, just unmapped) — it's a pure enhancement. */
+  manualCoordinates: Record<number, { lat: number; lng: number }>;
+}
+
+export function emptyReviewResolutions(): ReviewResolutions {
+  return { categories: {}, coordinateConflicts: {}, duplicateClusters: {}, manualCoordinates: {} };
+}
+
+/** The category values a Manager can assign from — deliberately closed
+ * (never free text) so a review resolution can only ever pick a value that
+ * is ALREADY in real use, never invent a new taxonomy entry. Sourced from
+ * both the existing production businesses and the OTHER rows in this same
+ * plan that already carry a real category — i.e. "the vocabulary this
+ * application (and this import) already uses", per spec. */
+export function categoryVocabulary(existingBusinesses: Business[], plan: ImportPlan): string[] {
+  const set = new Set<string>();
+  for (const b of existingBusinesses) if (b.category.trim()) set.add(b.category.trim());
+  for (const r of plan.rows) if (r.mappedFields.category) set.add(r.mappedFields.category);
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+/** Applies a Manager's explicit Data Quality resolutions on top of an
+ * UNCHANGED plan from planBusinessImport(). Pure — makes no Firestore/store
+ * call. A row is only ever promoted out of review when EVERY blocker it
+ * carries has an explicit resolution; anything left unresolved (including
+ * every ambiguous duplicate a Manager hasn't looked at yet) stays exactly
+ * where the strict importer put it. Never invents a category, never
+ * resolves a coordinate conflict on its own, never merges a duplicate. */
+export function applyReviewResolutions(plan: ImportPlan, resolutions: ReviewResolutions): ImportPlan {
+  const clustersById = new Map(plan.duplicateClusters.map((c) => [c.id, c]));
+  const rows: ImportRowResult[] = plan.rows.map((r) => ({ ...r, reasons: [...r.reasons], mappedFields: { ...r.mappedFields } }));
+
+  for (const r of rows) {
+    if (r.decision === "invalid") continue; // never resolvable
+
+    // Manual coordinates: pure enhancement, applied whenever present,
+    // regardless of any other blocker — never gates anything.
+    const manual = resolutions.manualCoordinates[r.rowNumber];
+    if (manual && r.mappedFields.lat == null && r.mappedFields.lng == null) {
+      r.mappedFields.lat = manual.lat;
+      r.mappedFields.lng = manual.lng;
+      r.reasons.push(`Coordinates entered manually by a Manager after opening the Maps Link (${manual.lat}, ${manual.lng}) — never fetched or geocoded automatically.`);
+    }
+
+    let categoryBlocked = r.blockers.missingCategory;
+    if (categoryBlocked) {
+      const assigned = resolutions.categories[r.rowNumber]?.trim();
+      if (assigned) {
+        r.mappedFields.category = assigned;
+        r.reasons.push(`Category explicitly assigned by a Manager: "${assigned}".`);
+        categoryBlocked = false;
+      }
+    }
+
+    let coordBlocked = !!r.blockers.coordinateConflict;
+    if (coordBlocked) {
+      const choice = resolutions.coordinateConflicts[r.rowNumber];
+      const conflict = r.blockers.coordinateConflict!;
+      if (choice === "spreadsheet") {
+        r.mappedFields.lat = conflict.spreadsheetLat;
+        r.mappedFields.lng = conflict.spreadsheetLng;
+        r.reasons.push("Coordinate conflict resolved by a Manager: spreadsheet Latitude/Longitude chosen.");
+        coordBlocked = false;
+      } else if (choice === "maps_link") {
+        r.mappedFields.lat = conflict.mapsLat;
+        r.mappedFields.lng = conflict.mapsLng;
+        r.reasons.push("Coordinate conflict resolved by a Manager: Maps Link coordinates chosen.");
+        coordBlocked = false;
+      }
+    }
+
+    let duplicateBlocked = false;
+    let duplicateExcluded = false;
+    if (r.blockers.duplicateClusterId) {
+      const cluster = clustersById.get(r.blockers.duplicateClusterId);
+      const resolution = resolutions.duplicateClusters[r.blockers.duplicateClusterId];
+      if (!cluster || !resolution || resolution.action === "needs_further_review") {
+        duplicateBlocked = true;
+      } else if (resolution.action === "keep_all") {
+        duplicateBlocked = false;
+      } else if (resolution.action === "keep_only") {
+        const keep = new Set(resolution.keepRowNumbers ?? []);
+        if (keep.has(r.rowNumber)) {
+          duplicateBlocked = false;
+        } else {
+          duplicateBlocked = true;
+          duplicateExcluded = true;
+        }
+      }
+    }
+
+    if (duplicateExcluded) {
+      r.decision = "excluded";
+      r.reasons.push("Excluded: a Manager chose to keep a different row from this duplicate cluster instead.");
+      continue;
+    }
+    if (!categoryBlocked && !coordBlocked && !duplicateBlocked) {
+      r.decision = r.existingBusinessId ? "update" : "create";
+    }
+    // else: leave decision exactly as planBusinessImport() set it
+    // (needs_review / duplicate_review) — still blocked.
+  }
+
+  const creates: Business[] = [];
+  const updates: { id: string; patch: Partial<Business> }[] = [];
+  const now = new Date().toISOString();
+  for (const r of rows) {
+    if (r.decision === "create") creates.push(buildImportedBusiness(r.mappedFields, deterministicBusinessImportId(r.businessCode!), now));
+    else if (r.decision === "update") updates.push({ id: r.existingBusinessId!, patch: r.mappedFields });
+  }
+
+  const counts = {
+    total: rows.length,
+    ready: rows.filter((r) => r.decision === "create").length,
+    update: rows.filter((r) => r.decision === "update").length,
+    duplicateReview: rows.filter((r) => r.decision === "duplicate_review").length,
+    invalid: rows.filter((r) => r.decision === "invalid").length,
+    needsReview: rows.filter((r) => r.decision === "needs_review").length,
+    excluded: rows.filter((r) => r.decision === "excluded").length,
+  };
+
+  return { sourceRowCount: plan.sourceRowCount, rows, counts, creates, updates, duplicateClusters: plan.duplicateClusters };
 }

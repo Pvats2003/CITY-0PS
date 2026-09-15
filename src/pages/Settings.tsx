@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
 import {
   Download,
@@ -39,7 +39,8 @@ import { fmtDate } from "@/lib/dates";
 import type { CityData, Rig } from "@/types";
 import { RigFormDialog } from "@/components/forms/RigFormDialog";
 import { parseLeadSpreadsheet } from "@/lib/xlsxParse";
-import { planBusinessImport, type ImportPlan } from "@/engine/businessImport";
+import { planBusinessImport, applyReviewResolutions, emptyReviewResolutions, type ImportPlan, type ReviewResolutions } from "@/engine/businessImport";
+import { BusinessDataQuality } from "@/components/import/BusinessDataQuality";
 
 const ROLE_LABEL: Record<string, string> = {
   MANAGER: "Manager",
@@ -72,6 +73,15 @@ export default function Settings() {
   const [bizImportError, setBizImportError] = useState<string | null>(null);
   const [bizImportBusy, setBizImportBusy] = useState(false);
   const [bizImportResult, setBizImportResult] = useState<{ created: number; updated: number } | null>(null);
+  // Data Quality review resolutions for the currently-open plan — session-
+  // only state (see the "Review-state architecture" note above
+  // confirmBizImport() for why this is never persisted to Firestore).
+  const [bizImportTab, setBizImportTab] = useState<"summary" | "quality">("summary");
+  const [bizImportResolutions, setBizImportResolutions] = useState<ReviewResolutions>(emptyReviewResolutions());
+  const resolvedBizImportPlan = useMemo(
+    () => (bizImportPlan ? applyReviewResolutions(bizImportPlan, bizImportResolutions) : null),
+    [bizImportPlan, bizImportResolutions],
+  );
   const [resetOpen, setResetOpen] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
   const [clearConfirmText, setClearConfirmText] = useState("");
@@ -144,6 +154,8 @@ export default function Settings() {
     setBizImportError(null);
     setBizImportResult(null);
     setBizImportPlan(null);
+    setBizImportResolutions(emptyReviewResolutions());
+    setBizImportTab("summary");
     setBizImportFileName(file.name);
     try {
       const buf = await file.arrayBuffer();
@@ -166,25 +178,37 @@ export default function Settings() {
   function cancelBizImport() {
     setBizImportPlan(null);
     setBizImportFileName("");
+    setBizImportResolutions(emptyReviewResolutions());
   }
 
+  // Review-state architecture: bizImportResolutions lives only in this
+  // component's React state, for the duration of one upload-review-confirm
+  // session. It is deliberately NOT written to Firestore or any other
+  // persistent store — see Settings.tsx's Data Quality section and the
+  // Phase F.2 report for the full rationale (no new collection needed: a
+  // resolution's only job is to influence the ONE import it's part of, and
+  // once that import is confirmed, the outcome is already durably recorded
+  // as real Business fields — there is nothing left for a stored "review
+  // record" to do). If the Manager navigates away mid-review, they re-upload
+  // and re-resolve — an accepted tradeoff for a periodic bulk-import tool.
   function confirmBizImport() {
-    if (!bizImportPlan) return;
+    if (!resolvedBizImportPlan) return;
     setBizImportBusy(true);
-    for (const business of bizImportPlan.creates) importCreateBusiness(business);
-    for (const { id, patch } of bizImportPlan.updates) updateBusiness(id, patch);
-    const created = bizImportPlan.creates.length;
-    const updated = bizImportPlan.updates.length;
+    for (const business of resolvedBizImportPlan.creates) importCreateBusiness(business);
+    for (const { id, patch } of resolvedBizImportPlan.updates) updateBusiness(id, patch);
+    const created = resolvedBizImportPlan.creates.length;
+    const updated = resolvedBizImportPlan.updates.length;
     logActivity({
       type: "note",
       entityKind: "business",
       entityId: "business-import",
-      summary: `Business lead import from ${bizImportFileName}: ${created} created, ${updated} updated, ${bizImportPlan.counts.duplicateReview} flagged as duplicates, ${bizImportPlan.counts.needsReview} needed review, ${bizImportPlan.counts.invalid} rejected.`,
-      detail: `${bizImportPlan.sourceRowCount} rows read.`,
+      summary: `Business lead import from ${bizImportFileName}: ${created} created, ${updated} updated, ${resolvedBizImportPlan.counts.duplicateReview} flagged as duplicates, ${resolvedBizImportPlan.counts.needsReview} needed review, ${resolvedBizImportPlan.counts.excluded} excluded by Manager, ${resolvedBizImportPlan.counts.invalid} rejected.`,
+      detail: `${resolvedBizImportPlan.sourceRowCount} rows read.`,
     });
     setBizImportBusy(false);
     setBizImportResult({ created, updated });
     setBizImportPlan(null);
+    setBizImportResolutions(emptyReviewResolutions());
     showToast(`Imported ${created} new and updated ${updated} existing businesses.`);
   }
 
@@ -496,72 +520,113 @@ export default function Settings() {
 
       {/* business lead import preview dialog — zero writes happen until Confirm Import */}
       <Dialog open={!!bizImportPlan} onOpenChange={(v) => !v && cancelBizImport()}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Import businesses from {bizImportFileName}</DialogTitle>
             <DialogDescription>Review every row before anything is written. Nothing is imported until you confirm.</DialogDescription>
           </DialogHeader>
-          {bizImportPlan && (
-            <div className="space-y-3">
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
-                <div className="flex items-center justify-between rounded-md bg-surface-2 px-3 py-1.5">
-                  <span className="text-muted">Rows detected</span>
-                  <span className="tabular-nums font-medium" data-testid="biz-import-count-total">{bizImportPlan.counts.total}</span>
-                </div>
-                <div className="flex items-center justify-between rounded-md bg-success-bg px-3 py-1.5">
-                  <span className="text-success">New businesses</span>
-                  <span className="tabular-nums font-medium text-success" data-testid="biz-import-count-ready">{bizImportPlan.counts.ready}</span>
-                </div>
-                <div className="flex items-center justify-between rounded-md bg-info-bg px-3 py-1.5">
-                  <span className="text-info">Existing (update)</span>
-                  <span className="tabular-nums font-medium text-info" data-testid="biz-import-count-update">{bizImportPlan.counts.update}</span>
-                </div>
-                <div className="flex items-center justify-between rounded-md bg-warning-bg px-3 py-1.5">
-                  <span className="text-warning">Duplicates</span>
-                  <span className="tabular-nums font-medium text-warning" data-testid="biz-import-count-duplicate">{bizImportPlan.counts.duplicateReview}</span>
-                </div>
-                <div className="flex items-center justify-between rounded-md bg-warning-bg px-3 py-1.5">
-                  <span className="text-warning">Needs review</span>
-                  <span className="tabular-nums font-medium text-warning" data-testid="biz-import-count-review">{bizImportPlan.counts.needsReview}</span>
-                </div>
-                <div className="flex items-center justify-between rounded-md bg-critical-bg px-3 py-1.5">
-                  <span className="text-critical">Invalid</span>
-                  <span className="tabular-nums font-medium text-critical" data-testid="biz-import-count-invalid">{bizImportPlan.counts.invalid}</span>
-                </div>
-              </div>
+          {bizImportPlan && resolvedBizImportPlan && (
+            <>
+              <Tabs value={bizImportTab} onValueChange={(v) => setBizImportTab(v as "summary" | "quality")}>
+                <TabsList>
+                  <TabsTrigger value="summary" data-testid="biz-import-tab-summary">
+                    Summary
+                  </TabsTrigger>
+                  <TabsTrigger value="quality" data-testid="biz-import-tab-quality">
+                    Business Data Quality
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
 
-              <div className="max-h-80 overflow-y-auto rounded-md border border-border divide-y divide-border" data-testid="biz-import-row-list">
-                {bizImportPlan.rows.map((r) => (
-                  <div key={r.rowNumber} className="px-3 py-2 text-sm" data-testid="biz-import-row" data-decision={r.decision}>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium truncate">
-                        {r.businessName ?? "(no name)"} <span className="text-muted font-normal">· {r.businessCode ?? "no code"}</span>
-                      </span>
-                      <Badge
-                        variant={
-                          r.decision === "create"
-                            ? "success"
-                            : r.decision === "update"
-                              ? "info"
-                              : r.decision === "invalid"
-                                ? "critical"
-                                : "warning"
-                        }
-                      >
-                        {r.decision === "create" ? "Ready" : r.decision === "update" ? "Update" : r.decision === "duplicate_review" ? "Duplicate" : r.decision === "invalid" ? "Invalid" : "Needs review"}
-                      </Badge>
+              {bizImportTab === "summary" && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
+                    <div className="flex items-center justify-between rounded-md bg-surface-2 px-3 py-1.5">
+                      <span className="text-muted">Rows detected</span>
+                      <span className="tabular-nums font-medium" data-testid="biz-import-count-total">{resolvedBizImportPlan.counts.total}</span>
                     </div>
-                    {r.reasons.length > 0 && (
-                      <ul className="mt-1 space-y-0.5 text-xs text-muted list-disc list-inside">
-                        {r.reasons.map((reason, i) => (
-                          <li key={i}>{reason}</li>
-                        ))}
-                      </ul>
+                    <div className="flex items-center justify-between rounded-md bg-success-bg px-3 py-1.5">
+                      <span className="text-success">New businesses</span>
+                      <span className="tabular-nums font-medium text-success" data-testid="biz-import-count-ready">{resolvedBizImportPlan.counts.ready}</span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-md bg-info-bg px-3 py-1.5">
+                      <span className="text-info">Existing (update)</span>
+                      <span className="tabular-nums font-medium text-info" data-testid="biz-import-count-update">{resolvedBizImportPlan.counts.update}</span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-md bg-warning-bg px-3 py-1.5">
+                      <span className="text-warning">Duplicates</span>
+                      <span className="tabular-nums font-medium text-warning" data-testid="biz-import-count-duplicate">{resolvedBizImportPlan.counts.duplicateReview}</span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-md bg-warning-bg px-3 py-1.5">
+                      <span className="text-warning">Needs review</span>
+                      <span className="tabular-nums font-medium text-warning" data-testid="biz-import-count-review">{resolvedBizImportPlan.counts.needsReview}</span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-md bg-critical-bg px-3 py-1.5">
+                      <span className="text-critical">Invalid</span>
+                      <span className="tabular-nums font-medium text-critical" data-testid="biz-import-count-invalid">{resolvedBizImportPlan.counts.invalid}</span>
+                    </div>
+                    {resolvedBizImportPlan.counts.excluded > 0 && (
+                      <div className="flex items-center justify-between rounded-md bg-surface-2 px-3 py-1.5">
+                        <span className="text-muted">Excluded by you</span>
+                        <span className="tabular-nums font-medium" data-testid="biz-import-count-excluded">{resolvedBizImportPlan.counts.excluded}</span>
+                      </div>
                     )}
                   </div>
-                ))}
-              </div>
-            </div>
+
+                  <div className="max-h-80 overflow-y-auto rounded-md border border-border divide-y divide-border" data-testid="biz-import-row-list">
+                    {resolvedBizImportPlan.rows.map((r) => (
+                      <div key={r.rowNumber} className="px-3 py-2 text-sm" data-testid="biz-import-row" data-decision={r.decision}>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium truncate">
+                            {r.businessName ?? "(no name)"} <span className="text-muted font-normal">· {r.businessCode ?? "no code"}</span>
+                          </span>
+                          <Badge
+                            variant={
+                              r.decision === "create" || r.decision === "update"
+                                ? "success"
+                                : r.decision === "invalid"
+                                  ? "critical"
+                                  : r.decision === "excluded"
+                                    ? "neutral"
+                                    : "warning"
+                            }
+                          >
+                            {r.decision === "create"
+                              ? "Ready"
+                              : r.decision === "update"
+                                ? "Update"
+                                : r.decision === "duplicate_review"
+                                  ? "Duplicate"
+                                  : r.decision === "invalid"
+                                    ? "Invalid"
+                                    : r.decision === "excluded"
+                                      ? "Excluded"
+                                      : "Needs review"}
+                          </Badge>
+                        </div>
+                        {r.reasons.length > 0 && (
+                          <ul className="mt-1 space-y-0.5 text-xs text-muted list-disc list-inside">
+                            {r.reasons.map((reason, i) => (
+                              <li key={i}>{reason}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {bizImportTab === "quality" && (
+                <BusinessDataQuality
+                  existingBusinesses={data.businesses}
+                  plan={bizImportPlan}
+                  resolvedPlan={resolvedBizImportPlan}
+                  resolutions={bizImportResolutions}
+                  onChange={setBizImportResolutions}
+                />
+              )}
+            </>
           )}
           <DialogFooter>
             <Button variant="ghost" onClick={cancelBizImport}>
@@ -569,10 +634,10 @@ export default function Settings() {
             </Button>
             <Button
               onClick={confirmBizImport}
-              disabled={bizImportBusy || !bizImportPlan || (bizImportPlan.counts.ready === 0 && bizImportPlan.counts.update === 0)}
+              disabled={bizImportBusy || !resolvedBizImportPlan || (resolvedBizImportPlan.counts.ready === 0 && resolvedBizImportPlan.counts.update === 0)}
               data-testid="biz-import-confirm"
             >
-              Confirm Import ({(bizImportPlan?.counts.ready ?? 0) + (bizImportPlan?.counts.update ?? 0)} rows)
+              Confirm Import ({(resolvedBizImportPlan?.counts.ready ?? 0) + (resolvedBizImportPlan?.counts.update ?? 0)} rows)
             </Button>
           </DialogFooter>
         </DialogContent>
