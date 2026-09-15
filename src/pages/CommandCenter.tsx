@@ -217,7 +217,7 @@ export default function CommandCenter() {
               <CardTitle>City Pulse</CardTitle>
               <Popover>
                 <PopoverTrigger asChild>
-                  <button className="text-muted hover:text-foreground">
+                  <button aria-label="Why is this score?" className="text-muted hover:text-foreground">
                     <Info className="size-3.5" />
                   </button>
                 </PopoverTrigger>

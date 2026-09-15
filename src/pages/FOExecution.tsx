@@ -328,7 +328,7 @@ export default function FOExecution() {
     <div className="min-h-dvh flex flex-col bg-background text-foreground max-w-md mx-auto border-x border-border">
       <header className="flex items-center gap-2 h-14 px-3 border-b border-border shrink-0">
         {selectedAssignment ? (
-          <button onClick={() => setSelected(null)} className="p-2 -ml-2 rounded-md hover:bg-surface-2">
+          <button onClick={() => setSelected(null)} aria-label="Back to today's list" className="p-2 -ml-2 rounded-md hover:bg-surface-2">
             <ChevronLeft className="size-5" />
           </button>
         ) : (

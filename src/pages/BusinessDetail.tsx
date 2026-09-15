@@ -239,7 +239,7 @@ export default function BusinessDetail() {
                   placeholder="Collector name"
                   className="h-8 text-xs"
                 />
-                <Button size="icon-sm" variant="secondary" onClick={submitCollector} disabled={!newCollector.trim()}>
+                <Button size="icon-sm" variant="secondary" onClick={submitCollector} disabled={!newCollector.trim()} aria-label="Add collector">
                   <UserPlus className="size-3.5" />
                 </Button>
               </div>

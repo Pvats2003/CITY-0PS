@@ -44,7 +44,7 @@ export function Topbar() {
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon-sm">
+          <Button variant="ghost" size="icon-sm" aria-label="Change theme">
             <ThemeIcon className="size-4" />
           </Button>
         </DropdownMenuTrigger>
