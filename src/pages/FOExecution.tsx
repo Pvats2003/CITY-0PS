@@ -39,7 +39,9 @@ import { toDeployability } from "@/engine/rigTaxonomy";
 import { deriveExecutionStage, evidenceCompleteness, latestOfType, checkLocation, PRECHECK_ITEMS, INSTALLATION_ITEMS } from "@/engine/execution";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge } from "@/components/status";
 import { RigDeployabilityBadge } from "@/components/rigs/RigDeployabilityBadge";
 import { cn } from "@/lib/utils";
@@ -1281,6 +1283,7 @@ function IssuesTab({ foId }: { foId: string }) {
 
 function ProfileTab({ foId, isPreview }: { foId: string; isPreview: boolean }) {
   const data = useCity();
+  const updateSettings = useCity((s) => s.updateSettings);
   const fo = data.fos.find((f) => f.id === foId)!;
   const { user, isDemoMode, logout } = useAuth();
   return (
@@ -1314,6 +1317,23 @@ function ProfileTab({ foId, isPreview }: { foId: string; isPreview: boolean }) {
           <span>Mode</span>
           <span className="text-foreground">{isDemoMode ? "Demo (this device only)" : "Production"}</span>
         </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label className="text-xs text-muted">Theme</Label>
+        <Select
+          value={data.settings.theme}
+          onValueChange={(v) => updateSettings({ theme: v as typeof data.settings.theme })}
+        >
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="dark">Dark</SelectItem>
+            <SelectItem value="light">Light</SelectItem>
+            <SelectItem value="system">System</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       {!isPreview && (
