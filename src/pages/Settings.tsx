@@ -42,6 +42,7 @@ import { parseLeadSpreadsheet } from "@/lib/xlsxParse";
 import { planBusinessImport, applyReviewResolutions, emptyReviewResolutions, type ImportPlan, type ReviewResolutions } from "@/engine/businessImport";
 import { BusinessDataQuality } from "@/components/import/BusinessDataQuality";
 import { ImportPreflight } from "@/components/import/ImportPreflight";
+import { ImportReconciliation } from "@/components/import/ImportReconciliation";
 
 const ROLE_LABEL: Record<string, string> = {
   MANAGER: "Manager",
@@ -77,7 +78,7 @@ export default function Settings() {
   // Data Quality review resolutions for the currently-open plan — session-
   // only state (see the "Review-state architecture" note above
   // confirmBizImport() for why this is never persisted to Firestore).
-  const [bizImportTab, setBizImportTab] = useState<"summary" | "quality" | "preflight">("summary");
+  const [bizImportTab, setBizImportTab] = useState<"summary" | "quality" | "preflight" | "reconciliation">("summary");
   const [bizImportResolutions, setBizImportResolutions] = useState<ReviewResolutions>(emptyReviewResolutions());
   const resolvedBizImportPlan = useMemo(
     () => (bizImportPlan ? applyReviewResolutions(bizImportPlan, bizImportResolutions) : null),
@@ -528,7 +529,7 @@ export default function Settings() {
           </DialogHeader>
           {bizImportPlan && resolvedBizImportPlan && (
             <>
-              <Tabs value={bizImportTab} onValueChange={(v) => setBizImportTab(v as "summary" | "quality" | "preflight")}>
+              <Tabs value={bizImportTab} onValueChange={(v) => setBizImportTab(v as "summary" | "quality" | "preflight" | "reconciliation")}>
                 <TabsList>
                   <TabsTrigger value="summary" data-testid="biz-import-tab-summary">
                     Summary
@@ -538,6 +539,9 @@ export default function Settings() {
                   </TabsTrigger>
                   <TabsTrigger value="preflight" data-testid="biz-import-tab-preflight">
                     Import Preflight
+                  </TabsTrigger>
+                  <TabsTrigger value="reconciliation" data-testid="biz-import-tab-reconciliation">
+                    Source vs Production
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
@@ -632,6 +636,8 @@ export default function Settings() {
               )}
 
               {bizImportTab === "preflight" && <ImportPreflight plan={bizImportPlan} resolvedPlan={resolvedBizImportPlan} resolutions={bizImportResolutions} />}
+
+              {bizImportTab === "reconciliation" && <ImportReconciliation existingBusinesses={data.businesses} plan={bizImportPlan} resolvedPlan={resolvedBizImportPlan} />}
             </>
           )}
           {resolvedBizImportPlan && (
