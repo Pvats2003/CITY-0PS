@@ -36,7 +36,17 @@ import {
 } from "@/engine/workflows";
 import { buildRigSummary, isDeployable, proposeRigReplacement } from "@/engine/rigGuardian";
 import { toDeployability } from "@/engine/rigTaxonomy";
-import { deriveExecutionStage, evidenceCompleteness, latestOfType, checkLocation, PRECHECK_ITEMS, INSTALLATION_ITEMS } from "@/engine/execution";
+import {
+  deriveExecutionStage,
+  evidenceCompleteness,
+  latestOfType,
+  checkLocation,
+  PRECHECK_ITEMS,
+  INSTALLATION_ITEMS,
+  groupAssignmentsIntoVisits,
+  visitGroupRigIds,
+  visitGroupTargetHours,
+} from "@/engine/execution";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -490,45 +500,126 @@ function TodayList({ assignments, onSelect }: { assignments: Assignment[]; onSel
     return <div className="p-8 text-center text-sm text-muted">No visits scheduled today.</div>;
   }
 
+  // Presentation-only grouping — one card per physical visit (business +
+  // FO + exact planned time window), never per rig. The underlying
+  // assignments are untouched; every rig row below still resolves to its
+  // own real Assignment.id via onSelect. A business with two genuinely
+  // separate visit windows on the same day still renders as two cards,
+  // since the time window is part of the grouping key.
+  const visits = groupAssignmentsIntoVisits(assignments);
+
   return (
     <div className="p-3 space-y-2.5">
       <div className="text-xs font-medium text-muted px-0.5">
-        {assignments.length} ASSIGNMENT{assignments.length === 1 ? "" : "S"}
+        {visits.length} VISIT{visits.length === 1 ? "" : "S"}
       </div>
-      {assignments.map((a) => {
-        const biz = bizMap.get(a.businessId);
-        const rig = a.rigId ? rigMap.get(a.rigId) : undefined;
-        const done = a.status === "completed";
-        const active = a.status === "in_progress";
+      {visits.map((visit) => {
+        const biz = bizMap.get(visit.businessId);
         const mapsUrl = biz ? businessMapsUrl(biz) : undefined;
-        return (
-          <div key={a.id} className="flex items-stretch gap-2">
-            <button
-              onClick={() => onSelect(a.id)}
-              className="flex-1 text-left rounded-lg border border-border bg-surface p-3.5 active:scale-[0.99] transition-transform min-w-0"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-muted tabular-nums">{fmtTime(a.plannedStart)}</span>
-                <StatusBadge status={done ? "completed" : active ? "active" : "pending"} />
-              </div>
-              <div className="text-base font-semibold mt-1 truncate">{biz?.name}</div>
-              <div className="text-xs text-muted flex items-center gap-1 mt-0.5">
-                <MapPin className="size-3.5" /> {biz?.area}
-                {rig && <span className="text-muted-2">· {rig.code}</span>}
-              </div>
-            </button>
-            {mapsUrl && (
-              <a
-                href={mapsUrl}
-                target="_blank"
-                rel="noreferrer"
-                onClick={(e) => e.stopPropagation()}
-                className="flex items-center justify-center rounded-lg border border-border bg-surface px-3 text-primary shrink-0"
-                title="Open in Google Maps"
+
+        // Single-rig (or rig-less) visit: unchanged from before grouping
+        // existed — one big tappable card, no "N Rigs Assigned" framing.
+        if (visit.assignments.length === 1) {
+          const a = visit.assignments[0];
+          const rig = a.rigId ? rigMap.get(a.rigId) : undefined;
+          const done = a.status === "completed";
+          const active = a.status === "in_progress";
+          return (
+            <div key={visit.key} className="flex items-stretch gap-2">
+              <button
+                onClick={() => onSelect(a.id)}
+                className="flex-1 text-left rounded-lg border border-border bg-surface p-3.5 active:scale-[0.99] transition-transform min-w-0"
               >
-                <Navigation2 className="size-4" />
-              </a>
-            )}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-muted tabular-nums">{fmtTime(a.plannedStart)}</span>
+                  <StatusBadge status={done ? "completed" : active ? "active" : "pending"} />
+                </div>
+                <div className="text-base font-semibold mt-1 truncate">{biz?.name}</div>
+                <div className="text-xs text-muted flex items-center gap-1 mt-0.5">
+                  <MapPin className="size-3.5" /> {biz?.area}
+                  {rig && <span className="text-muted-2">· {rig.code}</span>}
+                </div>
+              </button>
+              {mapsUrl && (
+                <a
+                  href={mapsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="flex items-center justify-center rounded-lg border border-border bg-surface px-3 text-primary shrink-0"
+                  title="Open in Google Maps"
+                >
+                  <Navigation2 className="size-4" />
+                </a>
+              )}
+            </div>
+          );
+        }
+
+        // Multi-rig visit: one business card, rigs listed underneath —
+        // each rig row independently actionable, resolving to its own
+        // real assignmentId when tapped.
+        const rigCount = visitGroupRigIds(visit).length;
+        const targetHours = visitGroupTargetHours(visit);
+        const completedCount = visit.assignments.filter((a) => a.status === "completed").length;
+        return (
+          <div key={visit.key} className="rounded-lg border border-border bg-surface p-3.5 space-y-3 min-w-0">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-xs font-medium text-muted tabular-nums">
+                  <span>{fmtTime(visit.plannedStart)}</span>
+                  <span className="text-muted-2">·</span>
+                  <span>{rigCount} Rig{rigCount === 1 ? "" : "s"} Assigned</span>
+                </div>
+                <div className="text-base font-semibold mt-1 truncate">{biz?.name}</div>
+                <div className="text-xs text-muted flex items-center gap-1 mt-0.5">
+                  <MapPin className="size-3.5" /> {biz?.area}
+                </div>
+              </div>
+              {mapsUrl && (
+                <a
+                  href={mapsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center justify-center rounded-lg border border-border bg-surface px-3 py-2 text-primary shrink-0"
+                  title="Open in Google Maps"
+                >
+                  <Navigation2 className="size-4" />
+                </a>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between text-xs text-muted">
+              <span>
+                {completedCount} / {rigCount} rig{rigCount === 1 ? "" : "s"} completed
+              </span>
+              <span className="tabular-nums">Target {fmtHours(targetHours, 0)}</span>
+            </div>
+
+            <div className="space-y-1.5">
+              {visit.assignments.map((a) => {
+                const rig = a.rigId ? rigMap.get(a.rigId) : undefined;
+                const needsRecheck = a.reviewStatus === "recheck_requested";
+                const done = a.status === "completed";
+                return (
+                  <button
+                    key={a.id}
+                    onClick={() => onSelect(a.id)}
+                    className="w-full flex items-center gap-2 rounded-md border border-border bg-surface-2/50 px-2.5 py-2 text-left active:scale-[0.99] transition-transform"
+                  >
+                    {needsRecheck ? (
+                      <AlertTriangle className="size-4 text-warning shrink-0" />
+                    ) : done ? (
+                      <CheckCircle2 className="size-4 text-success shrink-0" />
+                    ) : (
+                      <Circle className="size-4 text-muted-2 shrink-0" />
+                    )}
+                    <span className="text-sm font-medium flex-1 truncate">{rig?.code ?? "Unassigned rig"}</span>
+                    {needsRecheck && <span className="text-[11px] text-warning shrink-0">Recheck required</span>}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         );
       })}

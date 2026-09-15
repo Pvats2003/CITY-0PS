@@ -1,4 +1,5 @@
 import type { Assignment, Business, CityData, Evidence, EvidenceType, Session } from "@/types";
+import { RECORDING_HOURS_PER_RIG_PER_DAY } from "./insights";
 
 // ---------------------------------------------------------------------------
 // Evidence-driven execution — deterministic, explainable, exactly like Rig
@@ -339,4 +340,81 @@ export function buildCityExecutionSummary(data: CityData, date: string): CityExe
     locationMismatches,
     precheckFailures,
   };
+}
+
+// ---------------------------------------------------------------------------
+// FO Today: presentation-level visit grouping.
+//
+// A "visit" is one physical trip an FO makes to one business, which can
+// legitimately involve multiple rigs assigned at once (spec: multi-rig
+// businesses). The underlying data model stays assignment-per-rig — this
+// is ONLY a display grouping, computed fresh from the live assignments
+// array on every render; nothing is merged, mutated, or persisted. Every
+// FO action still resolves to one specific Assignment.id from this
+// grouping's own `assignments` array, exactly as it did before grouping
+// existed.
+// ---------------------------------------------------------------------------
+
+/** Same identity fields src/lib/assignmentIdentity.ts's AssignmentIdentity
+ * uses for "is this the same real-world visit," minus rigId — two
+ * assignments belong to the same physical visit only if they share
+ * business, FO, date, AND the exact same planned time window. A business
+ * with two genuinely separate visits on the same day (different planned
+ * times) is deliberately two groups, never collapsed into one. */
+function visitGroupKey(a: Pick<Assignment, "businessId" | "foId" | "date" | "plannedStart" | "plannedEnd">): string {
+  return [a.businessId, a.foId, a.date, a.plannedStart, a.plannedEnd].join("|");
+}
+
+export interface VisitGroup {
+  key: string;
+  businessId: string;
+  foId: string;
+  date: string;
+  plannedStart: string;
+  plannedEnd: string;
+  /** The real, untouched Assignment records for this visit — one per rig
+   * (or a single rig-less assignment). Sorted by rigId so the rig list
+   * renders in a stable order across reloads/re-syncs. */
+  assignments: Assignment[];
+}
+
+/** Groups a flat assignment list into physical visits. Pure and
+ * side-effect-free: called fresh on every render from the live
+ * `data.assignments` array, never cached or written back anywhere. */
+export function groupAssignmentsIntoVisits(assignments: Assignment[]): VisitGroup[] {
+  const groups = new Map<string, Assignment[]>();
+  for (const a of assignments) {
+    const key = visitGroupKey(a);
+    const list = groups.get(key);
+    if (list) list.push(a);
+    else groups.set(key, [a]);
+  }
+  return [...groups.entries()]
+    .map(([key, group]) => {
+      const first = group[0];
+      return {
+        key,
+        businessId: first.businessId,
+        foId: first.foId,
+        date: first.date,
+        plannedStart: first.plannedStart,
+        plannedEnd: first.plannedEnd,
+        assignments: [...group].sort((a, b) => (a.rigId ?? "").localeCompare(b.rigId ?? "")),
+      };
+    })
+    .sort((a, b) => new Date(a.plannedStart).getTime() - new Date(b.plannedStart).getTime());
+}
+
+/** Distinct rigs actually deployed on this one visit — mirrors
+ * engine/insights.ts's businessRigIdsFromAssignments, scoped to a single
+ * visit group instead of a whole business/day. */
+export function visitGroupRigIds(group: VisitGroup): string[] {
+  return [...new Set(group.assignments.filter((a): a is typeof a & { rigId: string } => !!a.rigId).map((a) => a.rigId))];
+}
+
+/** Target hours for this one visit = distinct rigs deployed × 10h — the
+ * same RECORDING_HOURS_PER_RIG_PER_DAY constant insights.ts's
+ * businessTargetHours uses, never a separately hardcoded 10/20/30/40. */
+export function visitGroupTargetHours(group: VisitGroup): number {
+  return visitGroupRigIds(group).length * RECORDING_HOURS_PER_RIG_PER_DAY;
 }

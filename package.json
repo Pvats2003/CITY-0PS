@@ -26,6 +26,7 @@
     "test:installation-evidence-sync": "node tests/installation-evidence-sync.regression.mjs",
     "test:media-upload-concurrency": "node tests/media-upload-concurrency.regression.mjs",
     "test:multi-rig-business": "node tests/multi-rig-business.regression.mjs",
+    "test:fo-visit-grouping": "node tests/fo-visit-grouping.regression.mjs",
     "test:location-evidence-photo": "node tests/location-evidence-photo.regression.mjs",
     "test:evidence-photo-lightbox": "node tests/evidence-photo-lightbox.regression.mjs",
     "test:evidence-recheck-reconciliation": "node tests/evidence-recheck-reconciliation.regression.mjs",

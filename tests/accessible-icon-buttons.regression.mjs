@@ -219,7 +219,7 @@ async function main() {
     const backButton = foPage.getByRole("button", { name: "Back to today's list" });
     check(await backButton.isVisible(), "the FO back button is reachable by its accessible name 'Back to today's list'");
     await backButton.click();
-    check(await foPage.locator("text=/ASSIGNMENT/").first().isVisible(), "clicking it still returns to Today's list (behavior unchanged)");
+    check(await foPage.locator("text=/VISIT/").first().isVisible(), "clicking it still returns to Today's list (behavior unchanged)");
     await foContext.close();
 
     if (failures > 0) console.error("\n--- preview server output (for debugging) ---\n" + serverOutput.slice(-4000));

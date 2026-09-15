@@ -383,10 +383,18 @@ async function main() {
     await page2.waitForSelector("text=Today", { timeout: 15000 });
     await sleep(1500);
 
+    // Product requirement (superseding this test's earlier assertion): the
+    // FO Today screen groups same-business/same-FO/same-time-window
+    // assignments into ONE visit card ("4 Rigs Assigned"), never four
+    // separate business cards — see groupAssignmentsIntoVisits() in
+    // src/engine/execution.ts. The underlying assignment records
+    // themselves stay untouched (proven by (J)/(K) below), only the FO's
+    // presentation is grouped.
     const todayBodyText = await page2.evaluate(() => document.body.innerText);
-    check(todayBodyText.includes("4 ASSIGNMENTS"), '(I) FO Today shows "4 ASSIGNMENTS" for the real dialog-created assignments — none merged into a single business card');
+    check(todayBodyText.includes("1 VISIT"), '(I) FO Today shows exactly "1 VISIT" for the four same-business/same-time assignments — grouped into one visit card, not four');
+    check(todayBodyText.includes("4 Rigs Assigned"), '(I) the grouped visit card reads "4 Rigs Assigned"');
     for (const code of ["R-01", "R-02", "R-03", "R-04"]) {
-      check(todayBodyText.includes(code), `(I) FO Today shows a card for ${code}`);
+      check(todayBodyText.includes(code), `(I) FO Today shows a rig row for ${code}`);
     }
     check(!todayBodyText.includes("R-05"), "(I) FO Today does NOT show R-05 — that attempt was correctly rejected and never persisted");
 
