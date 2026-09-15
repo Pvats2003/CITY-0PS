@@ -10,6 +10,7 @@ import {
   FileText,
   BarChart3,
   Search,
+  Map,
 } from "lucide-react";
 
 export const NAV_ITEMS = [
@@ -17,6 +18,7 @@ export const NAV_ITEMS = [
   { to: "/today", label: "Today", icon: CalendarClock },
   { to: "/businesses", label: "Businesses", icon: Store },
   { to: "/field-officers", label: "Field Officers", icon: Users },
+  { to: "/city-coverage", label: "City Coverage", icon: Map },
   { to: "/fleet", label: "Fleet", icon: Cpu },
   { to: "/sessions", label: "Sessions", icon: Radio },
   { to: "/issues", label: "Issues", icon: AlertTriangle },

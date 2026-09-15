@@ -32,3 +32,48 @@ export function businessMapsUrl(business: { googleMapsUrl?: string; lat?: number
   }
   return undefined;
 }
+
+/** Parses a literal lat/lng pair out of a Google Maps URL, when the URL
+ * itself already embeds one — the two shapes Google's own "Share" flow
+ * actually produces: "...maps?q=<lat>,<lng>" and ".../@<lat>,<lng>,<zoom>z"
+ * (the second also matches inside a longer "/maps/place/.../@lat,lng,17z"
+ * path). Deliberately does NOT resolve a maps.app.goo.gl short link (that
+ * only reveals its target via a redirect — a network call this stays free
+ * of) and does NOT attempt to geocode a place-name search URL — either
+ * case returns undefined rather than a guess. Coordinates are also range-
+ * validated (|lat|<=90, |lng|<=180) so a URL segment that merely looks
+ * numeric (e.g. a zoom level) can't be mistaken for one. */
+export function parseCoordinatesFromMapsUrl(url: string): { lat: number; lng: number } | undefined {
+  const COORD_PATTERNS = [/[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/, /@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/];
+  for (const pattern of COORD_PATTERNS) {
+    const match = url.match(pattern);
+    if (!match) continue;
+    const lat = Number(match[1]);
+    const lng = Number(match[2]);
+    if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+      return { lat, lng };
+    }
+  }
+  return undefined;
+}
+
+/** The single, deterministic way to resolve a business's real-world
+ * coordinates for geographic features (City Coverage's map, backup
+ * distance ranking): prefers the explicit lat/lng fields, then falls back
+ * to a literal-coordinate parse of a pasted googleMapsUrl. Returns
+ * undefined — never a fabricated or geocoded value — when neither source
+ * carries a real coordinate pair (e.g. a maps.app.goo.gl short link, a
+ * place-name search URL, or no location info at all). Callers must treat
+ * undefined as "no marker for this business," never substitute a guess. */
+export function resolveBusinessCoordinates(business: {
+  lat?: number;
+  lng?: number;
+  googleMapsUrl?: string;
+}): { lat: number; lng: number; source: "business" | "maps_url" } | undefined {
+  if (business.lat != null && business.lng != null) return { lat: business.lat, lng: business.lng, source: "business" };
+  if (business.googleMapsUrl) {
+    const parsed = parseCoordinatesFromMapsUrl(business.googleMapsUrl);
+    if (parsed) return { ...parsed, source: "maps_url" };
+  }
+  return undefined;
+}

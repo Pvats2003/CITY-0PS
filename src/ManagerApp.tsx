@@ -10,6 +10,7 @@ import Businesses from "@/pages/Businesses";
 import BusinessDetail from "@/pages/BusinessDetail";
 import FieldOfficers from "@/pages/FieldOfficers";
 import FieldOfficerDetail from "@/pages/FieldOfficerDetail";
+import CityCoverage from "@/pages/CityCoverage";
 import FOExecution from "@/pages/FOExecution";
 import Fleet from "@/pages/Fleet";
 import RigDetail from "@/pages/RigDetail";
@@ -74,6 +75,7 @@ export default function ManagerApp() {
         <Route path="/businesses/:id" element={<BusinessDetail />} />
         <Route path="/field-officers" element={<FieldOfficers />} />
         <Route path="/field-officers/:id" element={<FieldOfficerDetail />} />
+        <Route path="/city-coverage" element={<CityCoverage />} />
         <Route path="/fleet" element={<Fleet />} />
         <Route path="/fleet/:id" element={<RigDetail />} />
         <Route path="/sessions" element={<Sessions />} />

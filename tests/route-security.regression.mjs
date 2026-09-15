@@ -55,7 +55,7 @@ function killAndWait(child) {
 
 const MANAGER_ONLY_ROUTES = [
   "/", "/dashboard", "/today", "/businesses", "/businesses/biz_sec",
-  "/field-officers", "/field-officers/fo_sec", "/fleet", "/fleet/rig_sec",
+  "/field-officers", "/field-officers/fo_sec", "/city-coverage", "/fleet", "/fleet/rig_sec",
   "/sessions", "/sessions/session_sec", "/issues", "/issues/issue_sec",
   "/quality", "/reports", "/analytics", "/search", "/settings",
 ];
