@@ -201,6 +201,15 @@ export function describeError(err: unknown): string {
   const code = (err as { code?: string } | undefined)?.code;
   if (code === "permission-denied") return "Permission denied — you may not have access to this data.";
   if (code === "unavailable") return "The server is temporarily unavailable.";
+  if (code === "unauthenticated") return "Your session has expired — please sign in again.";
+  if (code === "deadline-exceeded") return "The request timed out. Check your connection and try again.";
+  if (code === "resource-exhausted") return "Too many requests right now — please try again shortly.";
+  // Any other Firestore SDK error code (e.g. "failed-precondition", which
+  // can embed a project-specific Firebase console URL) is never shown
+  // verbatim — the raw code/message is still logged to the console via
+  // firebaseBackend.ts's/drainOutbox's own diagnostics, just not rendered
+  // in the Manager/FO-facing sync banners.
+  if (code) return "Sync failed — please try again.";
   return err instanceof Error ? err.message : "Sync failed.";
 }
 
