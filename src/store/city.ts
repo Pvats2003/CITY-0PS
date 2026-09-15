@@ -81,6 +81,15 @@ interface CityActions {
   addBusiness: (b: Omit<Business, "id" | "createdAt">) => Business;
   updateBusiness: (id: string, patch: Partial<Business>) => void;
   removeBusiness: (id: string) => void;
+  /** Business Lead Import only (src/engine/businessImport.ts,
+   * src/pages/Settings.tsx) — inserts one fully-formed Business record whose
+   * id/createdAt the importer already set deterministically. A no-op if a
+   * business with that id already exists (the import plan should never ask
+   * for this — planBusinessImport() routes an existing id to updateBusiness
+   * instead — this is just a last-resort guard against a doubled write).
+   * Never logs an activity entry per-record; the import flow logs one
+   * summary event for the whole batch instead. */
+  importCreateBusiness: (b: Business) => void;
 
   // FO
   addFO: (f: Omit<FieldOfficer, "id" | "createdAt">) => FieldOfficer;
@@ -203,6 +212,11 @@ export const useCity = create<CityStore>()(
       removeBusiness: (bid) =>
         set((s) => {
           s.businesses = s.businesses.filter((x) => x.id !== bid);
+        }),
+      importCreateBusiness: (b) =>
+        set((s) => {
+          if (s.businesses.some((x) => x.id === b.id)) return;
+          s.businesses.push(b);
         }),
 
       addFO: (f) => {

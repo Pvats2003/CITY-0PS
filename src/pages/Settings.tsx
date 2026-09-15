@@ -19,6 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Dialog,
@@ -37,6 +38,8 @@ import { downloadCSV, downloadJSON } from "@/lib/csv";
 import { fmtDate } from "@/lib/dates";
 import type { CityData, Rig } from "@/types";
 import { RigFormDialog } from "@/components/forms/RigFormDialog";
+import { parseLeadSpreadsheet } from "@/lib/xlsxParse";
+import { planBusinessImport, type ImportPlan } from "@/engine/businessImport";
 
 const ROLE_LABEL: Record<string, string> = {
   MANAGER: "Manager",
@@ -50,11 +53,25 @@ export default function Settings() {
   const updateSettings = useCity((s) => s.updateSettings);
   const loadData = useCity((s) => s.loadData);
   const clearAllData = useCity((s) => s.clearAllData);
+  const updateBusiness = useCity((s) => s.updateBusiness);
+  const importCreateBusiness = useCity((s) => s.importCreateBusiness);
+  const logActivity = useCity((s) => s.logActivity);
   const { user, logout, isDemoMode } = useAuth();
 
   const fileInput = useRef<HTMLInputElement>(null);
   const [importPreview, setImportPreview] = useState<{ data: CityData; counts: Record<string, number> } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+
+  // Business Lead Import (spreadsheet -> Business records) — a separate flow
+  // from the JSON backup import above: it targets only the businesses
+  // collection, is Manager-confirmed row-by-row via a preview, and is
+  // idempotent on re-import. See src/engine/businessImport.ts.
+  const bizImportInput = useRef<HTMLInputElement>(null);
+  const [bizImportPlan, setBizImportPlan] = useState<ImportPlan | null>(null);
+  const [bizImportFileName, setBizImportFileName] = useState<string>("");
+  const [bizImportError, setBizImportError] = useState<string | null>(null);
+  const [bizImportBusy, setBizImportBusy] = useState(false);
+  const [bizImportResult, setBizImportResult] = useState<{ created: number; updated: number } | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
   const [clearConfirmText, setClearConfirmText] = useState("");
@@ -121,6 +138,54 @@ export default function Settings() {
     clearAllData();
     setClearOpen(false);
     setClearConfirmText("");
+  }
+
+  async function onBizImportFile(file: File) {
+    setBizImportError(null);
+    setBizImportResult(null);
+    setBizImportPlan(null);
+    setBizImportFileName(file.name);
+    try {
+      const buf = await file.arrayBuffer();
+      const parsed = await parseLeadSpreadsheet(buf);
+      if (!parsed.hasRequiredHeaders) {
+        setBizImportError("This file doesn't look like a lead spreadsheet — it's missing a \"Business Code\" and/or \"Business Name\" column. No data was read.");
+        return;
+      }
+      if (parsed.rows.length === 0) {
+        setBizImportError("No data rows were found in this file.");
+        return;
+      }
+      // Preview only — planBusinessImport() is pure and performs zero writes.
+      setBizImportPlan(planBusinessImport(data.businesses, parsed.rows));
+    } catch {
+      setBizImportError("This file could not be read as a spreadsheet. No data was changed.");
+    }
+  }
+
+  function cancelBizImport() {
+    setBizImportPlan(null);
+    setBizImportFileName("");
+  }
+
+  function confirmBizImport() {
+    if (!bizImportPlan) return;
+    setBizImportBusy(true);
+    for (const business of bizImportPlan.creates) importCreateBusiness(business);
+    for (const { id, patch } of bizImportPlan.updates) updateBusiness(id, patch);
+    const created = bizImportPlan.creates.length;
+    const updated = bizImportPlan.updates.length;
+    logActivity({
+      type: "note",
+      entityKind: "business",
+      entityId: "business-import",
+      summary: `Business lead import from ${bizImportFileName}: ${created} created, ${updated} updated, ${bizImportPlan.counts.duplicateReview} flagged as duplicates, ${bizImportPlan.counts.needsReview} needed review, ${bizImportPlan.counts.invalid} rejected.`,
+      detail: `${bizImportPlan.sourceRowCount} rows read.`,
+    });
+    setBizImportBusy(false);
+    setBizImportResult({ created, updated });
+    setBizImportPlan(null);
+    showToast(`Imported ${created} new and updated ${updated} existing businesses.`);
   }
 
   const exportBusinessesCsv = () =>
@@ -326,6 +391,49 @@ export default function Settings() {
               </CardContent>
             </Card>
 
+            <Card>
+              <CardHeader>
+                <CardTitle>Import Businesses</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0 space-y-3">
+                <p className="text-sm text-muted">
+                  Import businesses from a lead spreadsheet (.xlsx). Every row is previewed — nothing is written until you confirm. Re-importing the same file updates
+                  matching businesses in place without creating duplicates.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="secondary" onClick={() => bizImportInput.current?.click()} disabled={bizImportBusy} data-testid="biz-import-button">
+                    <Upload className="size-4" /> Import Businesses
+                  </Button>
+                  <input
+                    ref={bizImportInput}
+                    type="file"
+                    accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    hidden
+                    data-testid="biz-import-file-input"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void onBizImportFile(f);
+                      e.target.value = "";
+                    }}
+                  />
+                </div>
+                {bizImportError && (
+                  <div className="flex items-start gap-2 rounded-md border border-critical/25 bg-critical-bg px-3 py-2.5 text-sm" data-testid="biz-import-error">
+                    <AlertTriangle className="size-4 shrink-0 mt-0.5 text-critical" />
+                    <span>{bizImportError}</span>
+                  </div>
+                )}
+                {bizImportResult && (
+                  <div className="flex items-start gap-2 rounded-md border border-success/25 bg-success-bg px-3 py-2.5 text-sm" data-testid="biz-import-result">
+                    <CheckCircle2 className="size-4 shrink-0 mt-0.5 text-success" />
+                    <span>
+                      Created {bizImportResult.created}, updated {bizImportResult.updated}.
+                    </span>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
             {!isFirebaseConfigured() && (
               <Card>
                 <CardHeader>
@@ -381,6 +489,90 @@ export default function Settings() {
             </Button>
             <Button variant="destructive" onClick={() => confirmImport("replace")}>
               Replace everything
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* business lead import preview dialog — zero writes happen until Confirm Import */}
+      <Dialog open={!!bizImportPlan} onOpenChange={(v) => !v && cancelBizImport()}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Import businesses from {bizImportFileName}</DialogTitle>
+            <DialogDescription>Review every row before anything is written. Nothing is imported until you confirm.</DialogDescription>
+          </DialogHeader>
+          {bizImportPlan && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
+                <div className="flex items-center justify-between rounded-md bg-surface-2 px-3 py-1.5">
+                  <span className="text-muted">Rows detected</span>
+                  <span className="tabular-nums font-medium" data-testid="biz-import-count-total">{bizImportPlan.counts.total}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md bg-success-bg px-3 py-1.5">
+                  <span className="text-success">New businesses</span>
+                  <span className="tabular-nums font-medium text-success" data-testid="biz-import-count-ready">{bizImportPlan.counts.ready}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md bg-info-bg px-3 py-1.5">
+                  <span className="text-info">Existing (update)</span>
+                  <span className="tabular-nums font-medium text-info" data-testid="biz-import-count-update">{bizImportPlan.counts.update}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md bg-warning-bg px-3 py-1.5">
+                  <span className="text-warning">Duplicates</span>
+                  <span className="tabular-nums font-medium text-warning" data-testid="biz-import-count-duplicate">{bizImportPlan.counts.duplicateReview}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md bg-warning-bg px-3 py-1.5">
+                  <span className="text-warning">Needs review</span>
+                  <span className="tabular-nums font-medium text-warning" data-testid="biz-import-count-review">{bizImportPlan.counts.needsReview}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md bg-critical-bg px-3 py-1.5">
+                  <span className="text-critical">Invalid</span>
+                  <span className="tabular-nums font-medium text-critical" data-testid="biz-import-count-invalid">{bizImportPlan.counts.invalid}</span>
+                </div>
+              </div>
+
+              <div className="max-h-80 overflow-y-auto rounded-md border border-border divide-y divide-border" data-testid="biz-import-row-list">
+                {bizImportPlan.rows.map((r) => (
+                  <div key={r.rowNumber} className="px-3 py-2 text-sm" data-testid="biz-import-row" data-decision={r.decision}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium truncate">
+                        {r.businessName ?? "(no name)"} <span className="text-muted font-normal">· {r.businessCode ?? "no code"}</span>
+                      </span>
+                      <Badge
+                        variant={
+                          r.decision === "create"
+                            ? "success"
+                            : r.decision === "update"
+                              ? "info"
+                              : r.decision === "invalid"
+                                ? "critical"
+                                : "warning"
+                        }
+                      >
+                        {r.decision === "create" ? "Ready" : r.decision === "update" ? "Update" : r.decision === "duplicate_review" ? "Duplicate" : r.decision === "invalid" ? "Invalid" : "Needs review"}
+                      </Badge>
+                    </div>
+                    {r.reasons.length > 0 && (
+                      <ul className="mt-1 space-y-0.5 text-xs text-muted list-disc list-inside">
+                        {r.reasons.map((reason, i) => (
+                          <li key={i}>{reason}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={cancelBizImport}>
+              Cancel
+            </Button>
+            <Button
+              onClick={confirmBizImport}
+              disabled={bizImportBusy || !bizImportPlan || (bizImportPlan.counts.ready === 0 && bizImportPlan.counts.update === 0)}
+              data-testid="biz-import-confirm"
+            >
+              Confirm Import ({(bizImportPlan?.counts.ready ?? 0) + (bizImportPlan?.counts.update ?? 0)} rows)
             </Button>
           </DialogFooter>
         </DialogContent>
