@@ -102,6 +102,11 @@ export function ImportPreflight({ plan, resolvedPlan, resolutions }: Props) {
                         <span className="font-medium text-foreground">Fields preserved (never touched):</span> {r.writePreview.fieldsPreserved.join(", ")}
                       </div>
                     )}
+                    {r.locationSource === "google_geocoding" && (
+                      <div className="text-xs text-muted" data-testid="preflight-location-provenance">
+                        <span className="font-medium text-foreground">Location provenance:</span> coordinates accepted from an assisted Google Geocoding candidate (Manager-approved, never auto-accepted).
+                      </div>
+                    )}
                   </>
                 )}
               </div>

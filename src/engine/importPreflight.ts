@@ -36,10 +36,13 @@ export type ImportReasonCode =
   | "SHORT_MAPS_LINK_UNRESOLVED";
 
 /** Where a ready row's lat/lng will actually come from once written — never
- * invented, always traceable to one of these three real sources. Undefined
- * when the row has no resolvable coordinate at all (see LOCATION_MISSING /
- * SHORT_MAPS_LINK_UNRESOLVED). */
-export type LocationSource = "spreadsheet" | "maps" | "manual";
+ * invented, always traceable to one of these real sources. Undefined when
+ * the row has no resolvable coordinate at all (see LOCATION_MISSING /
+ * SHORT_MAPS_LINK_UNRESOLVED). "google_geocoding" (Phase F.5.3) is a Manager
+ * -accepted assisted-resolution candidate — distinct from "manual" (typed
+ * in by hand) purely for auditability; both are equally a human-approved
+ * value, never fetched/geocoded on this app's own initiative. */
+export type LocationSource = "spreadsheet" | "maps" | "manual" | "google_geocoding";
 
 export interface FinalPlanRow {
   rowNumber: number;
@@ -182,7 +185,7 @@ export function buildFinalImportPlan(plan: ImportPlan, resolvedPlan: ImportPlan,
 
     const manual = resolutions.manualCoordinates[r.rowNumber];
     let locationSource: LocationSource | undefined;
-    if (manual) locationSource = "manual";
+    if (manual) locationSource = manual.source === "google_geocoding" ? "google_geocoding" : "manual";
     else if (coordinateDecision === "maps_link") locationSource = "maps";
     else if (r.mappedFields.lat != null && r.mappedFields.lng != null) locationSource = "spreadsheet";
     else if (mapsLinkStatusOf(r.mappedFields) === "resolved_literal_coords") locationSource = "maps";

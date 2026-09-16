@@ -585,15 +585,21 @@ export interface ReviewResolutions {
   coordinateConflicts: Record<number, "spreadsheet" | "maps_link" | "needs_further_review">;
   /** clusterId -> resolution. */
   duplicateClusters: Record<string, DuplicateClusterResolution>;
-  /** rowNumber -> coordinates a Manager typed in by hand after opening the
-   * row's Maps Link themselves (e.g. to resolve a maps.app.goo.gl short
-   * link this importer will never auto-resolve — see COORD_MISMATCH_...
-   * comment and DEPLOYMENT notes). Never fetched, never geocoded, never
-   * derived from following a redirect — a human-entered value only.
-   * Applied whenever present; unlike the three resolutions above, this
-   * isn't gating anything (a business without coordinates already imports
-   * fine, just unmapped) — it's a pure enhancement. */
-  manualCoordinates: Record<number, { lat: number; lng: number }>;
+  /** rowNumber -> coordinates a Manager explicitly accepted for this row —
+   * either typed in by hand after opening the row's Maps Link themselves
+   * (e.g. to resolve a maps.app.goo.gl short link this importer will never
+   * auto-resolve — see COORD_MISMATCH_... comment and DEPLOYMENT notes), or
+   * accepted from an assisted Google Geocoding candidate (Phase F.5.3 — see
+   * src/lib/locationResolver.ts; a candidate is never auto-accepted, only
+   * ever applied here after an explicit Manager click). `source` defaults
+   * to "manual" when omitted, so every pre-F.5.3 caller/fixture that
+   * constructs `{ lat, lng }` without it keeps working unchanged. Never
+   * fetched/geocoded/derived from following a redirect on this app's own
+   * initiative either way — always a human-approved value. Applied
+   * whenever present; unlike the three resolutions above, this isn't
+   * gating anything (a business without coordinates already imports fine,
+   * just unmapped) — it's a pure enhancement. */
+  manualCoordinates: Record<number, { lat: number; lng: number; source?: "manual" | "google_geocoding" }>;
 }
 
 export function emptyReviewResolutions(): ReviewResolutions {
@@ -633,7 +639,11 @@ export function applyReviewResolutions(plan: ImportPlan, resolutions: ReviewReso
     if (manual && r.mappedFields.lat == null && r.mappedFields.lng == null) {
       r.mappedFields.lat = manual.lat;
       r.mappedFields.lng = manual.lng;
-      r.reasons.push(`Coordinates entered manually by a Manager after opening the Maps Link (${manual.lat}, ${manual.lng}) — never fetched or geocoded automatically.`);
+      r.reasons.push(
+        manual.source === "google_geocoding"
+          ? `Coordinates accepted by a Manager from an assisted Google Geocoding candidate (${manual.lat}, ${manual.lng}) — never auto-accepted.`
+          : `Coordinates entered manually by a Manager after opening the Maps Link (${manual.lat}, ${manual.lng}) — never fetched or geocoded automatically.`,
+      );
     }
 
     let categoryBlocked = r.blockers.missingCategory;

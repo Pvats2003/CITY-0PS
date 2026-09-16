@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, MapPinOff, MapPin, Users, Tag, CheckCircle2, Ban } from "lucide-react";
+import { AlertTriangle, MapPinOff, MapPin, Users, Tag, CheckCircle2, Ban, Globe } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import {
   type ImportRowResult,
   type ReviewResolutions,
 } from "@/engine/businessImport";
+import type { LocationCandidate, LocationResolveResult, LocationResolver } from "@/lib/locationResolver";
 
 /** Manager-only Data Quality review for one uploaded lead spreadsheet.
  * Purely a resolution UI over the plan applyReviewResolutions() already
@@ -26,6 +27,17 @@ interface Props {
   resolvedPlan: ImportPlan; // plan + applyReviewResolutions(resolutions)
   resolutions: ReviewResolutions;
   onChange: (next: ReviewResolutions) => void;
+  /** Phase F.5.3 — the assisted-location-resolution backend (real Google
+   * Geocoding via GoogleLocationResolver in production, FakeLocationResolver
+   * in tests — see src/lib/locationResolver.ts). This component never talks
+   * to Firebase or Google directly. */
+  resolver: LocationResolver;
+}
+
+interface GoogleRowState {
+  loading: boolean;
+  result?: LocationResolveResult;
+  decision?: "accept_google" | "keep_source" | "needs_further_review";
 }
 
 function rowByNumber(plan: ImportPlan, rowNumber: number): ImportRowResult | undefined {
@@ -106,8 +118,122 @@ function sortClusters(plan: ImportPlan, clusters: DuplicateCluster[], sort: DqSo
   return clusters;
 }
 
-export function BusinessDataQuality({ existingBusinesses, plan, resolvedPlan, resolutions, onChange }: Props) {
+/** One row's "Resolve with Google" affordance — button, loading state,
+ * candidate review card with the three explicit actions. Session-cached:
+ * once `state` for this row is set, re-rendering never re-calls the
+ * resolver on its own; only an explicit click does, and a resolved row's
+ * button disappears in favor of the candidate card, so clicking around
+ * (filters/sort/reopening the panel) never re-spends a request. Never
+ * writes anything itself — `onAccept` is the ONLY path that touches
+ * `resolutions`, and even that only ever populates `manualCoordinates`,
+ * exactly like the existing hand-typed entry. */
+function GoogleResolveBlock({
+  row,
+  resolver,
+  state,
+  onStateChange,
+  onAccept,
+  existingLat,
+  existingLng,
+  testIdPrefix,
+}: {
+  row: ImportRowResult;
+  resolver: LocationResolver;
+  state?: GoogleRowState;
+  onStateChange: (next: GoogleRowState) => void;
+  onAccept: (candidate: LocationCandidate) => void;
+  existingLat?: number;
+  existingLng?: number;
+  testIdPrefix: string;
+}) {
+  async function handleResolve() {
+    onStateChange({ loading: true });
+    const result = await resolver.resolveBusinessLocation({
+      businessName: row.businessName,
+      address: row.mappedFields.address,
+      city: row.mappedFields.area,
+      existingLat,
+      existingLng,
+      mapsUrl: row.mappedFields.googleMapsUrl,
+    });
+    onStateChange({ loading: false, result });
+  }
+
+  if (!state) {
+    return (
+      <Button size="sm" variant="secondary" onClick={handleResolve} data-testid={`${testIdPrefix}-resolve-google`}>
+        <Globe className="size-3.5" /> Resolve with Google
+      </Button>
+    );
+  }
+  if (state.loading) {
+    return (
+      <div className="text-xs text-muted" data-testid={`${testIdPrefix}-google-loading`}>
+        Resolving with Google…
+      </div>
+    );
+  }
+  const result = state.result;
+  if (!result || result.status === "NO_CANDIDATE" || !result.candidate) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-muted" data-testid={`${testIdPrefix}-google-no-candidate`}>
+        <span>{result?.reason ?? "No Google candidate available."}</span>
+        <Button size="sm" variant="ghost" onClick={handleResolve} data-testid={`${testIdPrefix}-google-retry`}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+  const c = result.candidate;
+  return (
+    <div className="rounded-md border border-border bg-surface-2 px-2.5 py-2 space-y-1.5" data-testid={`${testIdPrefix}-google-candidate`} data-status={result.status}>
+      <div className="text-xs font-medium">
+        Google candidate
+        {result.status === "NEEDS_REVIEW" && <span className="text-warning font-normal"> — needs review{result.reason ? `: ${result.reason}` : ""}</span>}
+      </div>
+      <div className="text-xs text-muted break-words">
+        {c.formattedAddress ?? "(no formatted address returned)"} · {c.lat.toFixed(6)}, {c.lng.toFixed(6)}
+        {c.distanceFromSpreadsheetCoordsMeters != null && ` · ${c.distanceFromSpreadsheetCoordsMeters}m from the existing coordinate (supporting evidence only)`}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant={state.decision === "accept_google" ? "default" : "secondary"}
+          onClick={() => {
+            onStateChange({ ...state, decision: "accept_google" });
+            onAccept(c);
+          }}
+          data-testid={`${testIdPrefix}-google-accept`}
+        >
+          Accept Google location
+        </Button>
+        <Button size="sm" variant={state.decision === "keep_source" ? "default" : "ghost"} onClick={() => onStateChange({ ...state, decision: "keep_source" })} data-testid={`${testIdPrefix}-google-keep-source`}>
+          Keep source location
+        </Button>
+        <Button
+          size="sm"
+          variant={state.decision === "needs_further_review" ? "default" : "ghost"}
+          onClick={() => onStateChange({ ...state, decision: "needs_further_review" })}
+          data-testid={`${testIdPrefix}-google-needs-review`}
+        >
+          Needs further review
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export function BusinessDataQuality({ existingBusinesses, plan, resolvedPlan, resolutions, onChange, resolver }: Props) {
   const [manualCoordDraft, setManualCoordDraft] = useState<Record<number, { lat: string; lng: string }>>({});
+  // Phase F.5.3 — one entry per row that has ever clicked "Resolve with
+  // Google" this session; never persisted, never written to Firestore.
+  const [googleResolutions, setGoogleResolutions] = useState<Record<number, GoogleRowState>>({});
+  function setGoogleRowState(rowNumber: number, next: GoogleRowState) {
+    setGoogleResolutions((s) => ({ ...s, [rowNumber]: next }));
+  }
+  function acceptGoogleCandidate(rowNumber: number, candidate: LocationCandidate) {
+    onChange({ ...resolutions, manualCoordinates: { ...resolutions.manualCoordinates, [rowNumber]: { lat: candidate.lat, lng: candidate.lng, source: "google_geocoding" } } });
+  }
   // Filter/sort are pure view state — which section(s) render and in what
   // order — never resolution state, so toggling them can never change the
   // final plan (see [Q] in tests/f5-data-quality-completion.regression.mjs).
@@ -392,6 +518,20 @@ export function BusinessDataQuality({ existingBusinesses, plan, resolvedPlan, re
                       Needs further review
                     </Button>
                   </div>
+                  {/* Optional 3rd opinion — never automatic, never replaces
+                      either existing source on its own (see spec section 9:
+                      the Manager still explicitly picks spreadsheet/Maps/
+                      Google, this button only adds a candidate to compare). */}
+                  <GoogleResolveBlock
+                    row={r}
+                    resolver={resolver}
+                    state={googleResolutions[r.rowNumber]}
+                    onStateChange={(next) => setGoogleRowState(r.rowNumber, next)}
+                    onAccept={(candidate) => acceptGoogleCandidate(r.rowNumber, candidate)}
+                    existingLat={conflict.spreadsheetLat}
+                    existingLng={conflict.spreadsheetLng}
+                    testIdPrefix="biz-dq-coord"
+                  />
                 </div>
               );
             })}
@@ -449,6 +589,14 @@ export function BusinessDataQuality({ existingBusinesses, plan, resolvedPlan, re
                         Save
                       </Button>
                     </div>
+                    <GoogleResolveBlock
+                      row={r}
+                      resolver={resolver}
+                      state={googleResolutions[r.rowNumber]}
+                      onStateChange={(next) => setGoogleRowState(r.rowNumber, next)}
+                      onAccept={(candidate) => acceptGoogleCandidate(r.rowNumber, candidate)}
+                      testIdPrefix="biz-dq-location"
+                    />
                   </div>
                 );
               })}
@@ -510,6 +658,14 @@ export function BusinessDataQuality({ existingBusinesses, plan, resolvedPlan, re
                         Save
                       </Button>
                     </div>
+                    <GoogleResolveBlock
+                      row={r}
+                      resolver={resolver}
+                      state={googleResolutions[r.rowNumber]}
+                      onStateChange={(next) => setGoogleRowState(r.rowNumber, next)}
+                      onAccept={(candidate) => acceptGoogleCandidate(r.rowNumber, candidate)}
+                      testIdPrefix="biz-dq-shortlink"
+                    />
                   </div>
                 );
               })}

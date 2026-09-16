@@ -41,6 +41,7 @@ import { RigFormDialog } from "@/components/forms/RigFormDialog";
 import { parseLeadSpreadsheet } from "@/lib/xlsxParse";
 import { planBusinessImport, applyReviewResolutions, emptyReviewResolutions, type ImportPlan, type ReviewResolutions } from "@/engine/businessImport";
 import { BusinessDataQuality } from "@/components/import/BusinessDataQuality";
+import { getLocationResolver } from "@/lib/locationResolver";
 import { ImportPreflight } from "@/components/import/ImportPreflight";
 import { ImportReconciliation } from "@/components/import/ImportReconciliation";
 
@@ -632,6 +633,7 @@ export default function Settings() {
                   resolvedPlan={resolvedBizImportPlan}
                   resolutions={bizImportResolutions}
                   onChange={setBizImportResolutions}
+                  resolver={getLocationResolver()}
                 />
               )}
 
