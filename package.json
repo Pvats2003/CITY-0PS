@@ -51,7 +51,9 @@
   "test:f5-data-quality-completion": "node tests/f5-data-quality-completion.regression.mjs",
   "test:f53-location-resolver": "node tests/f53-location-resolver.regression.mjs",
   "test:planner-plans-sync-race": "node tests/planner-plans-sync-race.regression.mjs",
-  "test:f53-cloud-function-input-validation": "node tests/f53-cloud-function-input-validation.unit.mjs"
+  "test:f53-cloud-function-input-validation": "node tests/f53-cloud-function-input-validation.unit.mjs",
+  "test:outbox-drain-reentrancy": "node tests/outbox-drain-reentrancy.regression.mjs",
+  "test:f53-resolve-google-double-click": "node tests/f53-resolve-google-double-click.regression.mjs"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.11",

@@ -158,6 +158,32 @@ async function main() {
     check(result === undefined, `[${label}] invalid coordinate is normalized to undefined`);
   }
 
+  console.log("\n[toSafeCoordinate — exact requested matrix] existingLat (bound 90) and existingLng (bound 180), every value from the audit's own list:");
+  const latMatrix = ["NaN", "Infinity", "-Infinity", null, undefined, {}, [], "91", "-91", 91, -91];
+  for (const value of latMatrix) {
+    let result, threw = false;
+    try { result = toSafeCoordinate(value, 90); } catch { threw = true; }
+    check(!threw, `existingLat=${JSON.stringify(value)} never throws`);
+    check(result === undefined, `existingLat=${JSON.stringify(value)} is rejected (normalized to undefined) — never reaches haversineMeters() or the query`);
+  }
+  const lngMatrix = ["NaN", "Infinity", "-Infinity", null, undefined, {}, [], "181", "-181", 181, -181];
+  for (const value of lngMatrix) {
+    let result, threw = false;
+    try { result = toSafeCoordinate(value, 180); } catch { threw = true; }
+    check(!threw, `existingLng=${JSON.stringify(value)} never throws`);
+    check(result === undefined, `existingLng=${JSON.stringify(value)} is rejected (normalized to undefined) — never reaches haversineMeters() or the query`);
+  }
+  // The boundary itself (exactly 90 / 180 / -90 / -180) is a real, valid
+  // Earth coordinate and must NOT be rejected — only values that exceed it.
+  check(toSafeCoordinate(90, 90) === 90, "exactly the boundary value 90 is accepted for lat (not off-by-one rejected)");
+  check(toSafeCoordinate(-90, 90) === -90, "exactly the boundary value -90 is accepted for lat");
+  check(toSafeCoordinate(180, 180) === 180, "exactly the boundary value 180 is accepted for lng");
+  check(toSafeCoordinate(-180, 180) === -180, "exactly the boundary value -180 is accepted for lng");
+
+  console.log("\n[buildQuery] existingLat/existingLng were never part of the serialized query in the first place (only businessName/address/city/area/state/country are) — confirming there is no code path by which an invalid coordinate could be 'serialized into the query':");
+  const queryIgnoresCoords = buildQuery({ businessName: "Test Biz", existingLat: "NaN", existingLng: { malicious: true } });
+  check(queryIgnoresCoords === "Test Biz, India", `buildQuery()'s output contains nothing coordinate-related regardless of what existingLat/existingLng carry (got: "${queryIgnoresCoords}")`);
+
   console.log(failures === 0 ? "\nAll checks passed." : `\n${failures} check(s) failed.`);
   process.exit(failures === 0 ? 0 : 1);
 }
