@@ -96,7 +96,31 @@ service cloud.firestore {
       // Limited resolve: an FO may only update an issue that is already
       // theirs, and only one with no rigId (rig issues stay on the repair
       // lifecycle regardless of who reported them — see permission matrix).
-      allow update: if isFieldOfficer() && resource.data.foId == myFoId() && !("rigId" in resource.data);
+      //
+      // Narrow update grant, same defensive pattern as assignments/
+      // rigIncidents above: the app's only write path (resolveIssue() in
+      // src/store/city.ts, called from FOExecution.tsx and
+      // ResolveIssueDialog.tsx) ever touches status/resolution/resolvedAt —
+      // every other field (foId, severity, rootCause, action, lostHours,
+      // businessId, rigId, sessionId, assignmentId, etc.) stays immutable
+      // from the FO side, and ownership can't change hands even though the
+      // FO already satisfies the resource.data.foId check above.
+      //
+      // removedKeys().size() == 0: same reasoning as assignments/
+      // rigIncidents — affectedKeys().hasOnly([...]) alone would also
+      // permit deleteField() on any of these three fields, which no
+      // legitimate FO workflow ever does (resolveIssue() always assigns a
+      // real value to all three).
+      allow update: if isFieldOfficer()
+        && resource.data.foId == myFoId()
+        && !("rigId" in resource.data)
+        && request.resource.data.foId == myFoId()
+        && request.resource.data.diff(resource.data).removedKeys().size() == 0
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status",
+          "resolution",
+          "resolvedAt"
+        ]);
     }
     match /rigIncidents/{docId} {
       allow read: if isFieldOfficer() && resource.data.foId == myFoId();

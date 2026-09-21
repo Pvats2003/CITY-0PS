@@ -22,6 +22,7 @@
     "test:supabase-media-storage": "node tests/supabase-media-storage.mjs",
     "test:evidence-sync-reconciliation": "node tests/evidence-sync-reconciliation.emulator.mjs",
     "test:assignment-fo-update-permission": "node tests/assignment-fo-update-permission.emulator.mjs",
+    "test:issue-fo-update-permission": "node tests/issue-fo-update-permission.emulator.mjs",
     "test:assignment-partial-patch": "node tests/assignment-partial-patch.regression.mjs",
     "test:installation-evidence-sync": "node tests/installation-evidence-sync.regression.mjs",
     "test:media-upload-concurrency": "node tests/media-upload-concurrency.regression.mjs",
