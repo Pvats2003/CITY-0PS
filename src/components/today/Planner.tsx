@@ -70,6 +70,10 @@ export function Planner() {
   // worked. See outbox.ts's drainOutbox for how a failed write here gets
   // reported.
   const assignmentsSync = useCollectionSyncStatus("assignments");
+  // Real sync state for "plans" itself — see the draft-resume effect below,
+  // which needs to know when this collection's first snapshot has actually
+  // landed, not just whether `date` changed.
+  const plansSync = useCollectionSyncStatus("plans");
   // In-flight guard against rapid repeated clicks on "Approve Plan" before
   // the confirm dialog visibly closes — same pattern as
   // AssignmentFormDialog's submittingRef: a ref for the actual
@@ -93,6 +97,23 @@ export function Planner() {
 
   // Resume an existing draft for this date (survives navigating away and
   // back — DRAFT is real persisted state, not component-local scratch).
+  //
+  // Deliberately scoped to [date, plansSync.hasSyncedOnce] only, NOT
+  // `data.plans` itself — re-running on every remote "plans" update would
+  // wipe an in-progress draft edit the instant an unrelated sync tick
+  // arrives. But `date` is set once at mount (useState(tomorrowISO())) and
+  // never changes on its own, so on a fresh page load in real (non-demo)
+  // backend mode this effect's FIRST run can race Firestore's plans
+  // listener: if the initial snapshot hasn't arrived yet, `data.plans` is
+  // still empty/stale, and — since the effect would never fire again on
+  // its own — an already-approved or in-progress plan for this date would
+  // silently appear as "no draft" for the rest of the session, until the
+  // Manager happened to change the date away and back. `hasSyncedOnce`
+  // flips exactly once (false -> true) the moment the real first snapshot
+  // lands, giving this effect exactly one extra, necessary re-run to pick
+  // up the real data — and never fires again after that on subsequent
+  // updates. In demo mode `hasSyncedOnce` stays permanently false (data is
+  // already synchronous there), so this adds zero extra runs.
   useEffect(() => {
     const existing = [...data.plans].filter((p) => p.date === date && p.status !== "cancelled").sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
     if (existing && existing.status !== "approved" && existing.status !== "active" && existing.status !== "completed") {
@@ -111,7 +132,7 @@ export function Planner() {
     setSavedNotice(false);
     setApprovedNotice(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date]);
+  }, [date, plansSync.hasSyncedOnce]);
 
   const alreadyActive = data.assignments.filter((a) => a.date === date && a.status !== "cancelled").length;
 

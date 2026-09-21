@@ -48,7 +48,8 @@
   "test:business-data-quality": "node tests/business-data-quality.regression.mjs",
   "test:import-preflight": "node tests/import-preflight.regression.mjs",
   "test:f5-data-quality-completion": "node tests/f5-data-quality-completion.regression.mjs",
-  "test:f53-location-resolver": "node tests/f53-location-resolver.regression.mjs"
+  "test:f53-location-resolver": "node tests/f53-location-resolver.regression.mjs",
+  "test:planner-plans-sync-race": "node tests/planner-plans-sync-race.regression.mjs"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.11",
