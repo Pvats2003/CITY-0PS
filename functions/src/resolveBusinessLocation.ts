@@ -34,11 +34,43 @@ function isBlank(s: string | undefined): boolean {
   return s == null || s.trim() === "";
 }
 
+/** LocationResolveInput's field types are a TypeScript-only contract — they
+ * describe what the browser's own client sends, not what a caller hitting
+ * this callable's HTTPS endpoint directly (bypassing the Firebase client
+ * SDK entirely, e.g. with a stolen-but-valid ID token) is constrained to
+ * send. request.data is untyped `any` at runtime. Every string-shaped
+ * field is normalized through this before use so a non-string value
+ * (a number, array, nested object, boolean) is safely treated as absent
+ * instead of crashing on `.trim()` — that crash was previously reachable
+ * with a signed-in, authorized Manager's own credentials, just malformed
+ * input; it never leaked anything (Firebase's onCall wraps every unhandled
+ * exception as an opaque "internal" error before it reaches the caller),
+ * but it produced an ugly, unnecessary failure instead of a clean
+ * "invalid-argument" for input this function can simply ignore. */
+export function toSafeString(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
+}
+
+/** Same reasoning as toSafeString, for existingLat/existingLng: a
+ * non-numeric, NaN, or out-of-range value must never reach haversineMeters()
+ * (which would silently produce a NaN/nonsensical
+ * distanceFromSpreadsheetCoordsMeters shown to the Manager as "supporting
+ * evidence") or a crash. Valid Earth latitude/longitude only. */
+export function toSafeCoordinate(v: unknown, maxAbs: number): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= maxAbs ? v : undefined;
+}
+
 /** Deterministic, address-shaped query — never invents a missing component.
  * Business Code is never a valid input here (the caller-side type doesn't
  * even carry one) — only real geographic/identity fields. */
-function buildQuery(input: LocationResolveInput): string {
-  const parts = [input.businessName, input.address, !isBlank(input.city) ? input.city : input.area, input.state, input.country ?? "India"]
+export function buildQuery(input: LocationResolveInput): string {
+  const businessName = toSafeString(input.businessName);
+  const address = toSafeString(input.address);
+  const city = toSafeString(input.city);
+  const area = toSafeString(input.area);
+  const state = toSafeString(input.state);
+  const country = toSafeString(input.country) ?? "India";
+  const parts = [businessName, address, !isBlank(city) ? city : area, state, country]
     .map((p) => p?.trim())
     .filter((p): p is string => !isBlank(p));
   return parts.join(", ");
@@ -113,11 +145,19 @@ export const resolveBusinessLocation = onCall<LocationResolveInput, Promise<Loca
 
     // 3. Input validation — reject empty/meaningless queries. No arbitrary
     // Google endpoint or URL is ever accepted from the client.
-    const input = request.data ?? {};
+    const input = (typeof request.data === "object" && request.data !== null ? request.data : {}) as LocationResolveInput;
     const query = buildQuery(input);
     if (isBlank(query)) {
       throw new HttpsError("invalid-argument", "No usable business name, address, or city was provided.");
     }
+    // existingLat/existingLng are supporting evidence only (a display-only
+    // distance hint — see the Manager UI's coordinate-conflict card) and
+    // never gate the Geocoding call itself, but an unsanitized NaN/
+    // Infinity/out-of-range value would still flow straight into
+    // haversineMeters() below and back out to the client as a nonsensical
+    // "distance" next to a real result.
+    const existingLat = toSafeCoordinate(input.existingLat, 90);
+    const existingLng = toSafeCoordinate(input.existingLng, 180);
 
     const apiKey = GOOGLE_MAPS_API_KEY.value();
     const requestedAt = new Date().toISOString();
@@ -159,7 +199,7 @@ export const resolveBusinessLocation = onCall<LocationResolveInput, Promise<Loca
       resultType: top.types?.join(", "),
       apiStatus: response.status,
       requestedAt,
-      ...(input.existingLat != null && input.existingLng != null ? { distanceFromSpreadsheetCoordsMeters: haversineMeters(input.existingLat, input.existingLng, loc.lat, loc.lng) } : {}),
+      ...(existingLat != null && existingLng != null ? { distanceFromSpreadsheetCoordsMeters: haversineMeters(existingLat, existingLng, loc.lat, loc.lng) } : {}),
     };
 
     // Never auto-accept: multiple plausible matches, a partial match, or a
